@@ -4,11 +4,25 @@ const router = express.Router();
 const pool = require("../config/db");
 
 const { productSchema } = require("../validation/product.validation");
+const { attachImageData } = require("../utils/productImages");
 
 router.get("/", async (req, res) => {
   try {
-    const result = await pool.query("SELECT * FROM products ORDER BY id ASC");
-    res.status(200).json(result.rows);
+    const productsResult = await pool.query("SELECT * FROM products ORDER BY id ASC");
+    const products = productsResult.rows;
+
+    const productIds = products.map((product) => product.id);
+    const imagesResult = await pool.query(
+      `
+      SELECT id, product_id, image_url, sort_order, is_main
+      FROM product_images
+      WHERE is_active = true AND product_id = ANY($1::int[])
+      ORDER BY product_id ASC, sort_order ASC, id ASC
+      `,
+      [productIds]
+    );
+
+    res.status(200).json(attachImageData(products, imagesResult.rows));
   } catch (err) {
     console.error("Error fetching products:", err.message);
     res.status(500).json({ error: "Failed to fetch products" });
@@ -18,17 +32,28 @@ router.get("/", async (req, res) => {
 router.get("/:id", async (req, res) => {
     try {
       const { id } = req.params;
-  
-      const result = await pool.query(
+
+      const productResult = await pool.query(
         "SELECT * FROM products WHERE id = $1",
         [id]
       );
-  
-      if (result.rows.length === 0) {
+
+      if (productResult.rows.length === 0) {
         return res.status(404).json({ error: "Product not found" });
       }
-  
-      res.status(200).json(result.rows[0]);
+
+      const imagesResult = await pool.query(
+        `
+        SELECT id, product_id, image_url, sort_order, is_main
+        FROM product_images
+        WHERE product_id = $1 AND is_active = true
+        ORDER BY sort_order ASC, id ASC
+        `,
+        [id]
+      );
+
+      const [productWithImages] = attachImageData(productResult.rows, imagesResult.rows);
+      res.status(200).json(productWithImages);
     } catch (err) {
       console.error("Error fetching product:", err.message);
       res.status(500).json({ error: "Failed to fetch product" });
