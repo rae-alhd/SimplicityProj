@@ -87,6 +87,7 @@ const btnStyle = {
 
 export default function ProductCard({ product }) {
   const navigate = useNavigate();
+  const displayImageUrl = product.main_image_url || product.image_url;
 
   const handleClick = () => {
     navigate(`/products/${product.id}`);
@@ -109,9 +110,9 @@ export default function ProductCard({ product }) {
       }}
     >
       <div style={imageWrapStyle}>
-        {product.image_url ? (
+        {displayImageUrl ? (
           <img
-            src={product.image_url}
+            src={displayImageUrl}
             alt={product.name}
             style={imgStyle}
             onError={(e) => {
@@ -123,7 +124,7 @@ export default function ProductCard({ product }) {
         <div
           style={{
             ...placeholderStyle,
-            display: product.image_url ? "none" : "flex",
+            display: displayImageUrl ? "none" : "flex",
           }}
         >
           No Image

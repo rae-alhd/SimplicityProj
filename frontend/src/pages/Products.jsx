@@ -308,6 +308,7 @@ function ProductCard({ product, navigate }) {
   };
 
   const isCustomizable = !!product.is_customizable;
+  const displayImageUrl = product.main_image_url || product.image_url;
 
   return (
     <div
@@ -323,9 +324,9 @@ function ProductCard({ product, navigate }) {
       <div style={styles.imageWrap}>
         {isCustomizable && <span style={styles.customBadge}>Custom</span>}
 
-        {product.image_url ? (
+        {displayImageUrl ? (
           <img
-            src={product.image_url}
+            src={displayImageUrl}
             alt={product.name}
             style={{
               ...styles.image,
