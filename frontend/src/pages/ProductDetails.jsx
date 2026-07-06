@@ -95,6 +95,26 @@ const s = {
     color: "#aaa",
     fontFamily: FONT,
   },
+  thumbRow: {
+    display: "flex",
+    gap: "8px",
+    marginTop: "12px",
+  },
+  thumbBtn: (selected) => ({
+    width: "64px",
+    height: "80px",
+    padding: 0,
+    border: selected ? "1.5px solid #1a1a1a" : "1px solid #ddd",
+    background: "#fff",
+    cursor: "pointer",
+    overflow: "hidden",
+  }),
+  thumbImg: {
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+    display: "block",
+  },
 
   /* info column */
   infoCol: {
@@ -314,6 +334,7 @@ export default function ProductDetails({ fetchCart }) {
   const [qty, setQty] = useState(1);
   const [added, setAdded] = useState(false);
   const [imgError, setImgError] = useState(false);
+  const [selectedImageUrl, setSelectedImageUrl] = useState(null);
 
   useEffect(() => {
     setLoading(true);
@@ -337,6 +358,11 @@ export default function ProductDetails({ fetchCart }) {
         setLoading(false);
       });
   }, [id]);
+
+  useEffect(() => {
+    setSelectedImageUrl(product?.main_image_url || product?.image_url || null);
+    setImgError(false);
+  }, [product]);
 
   const handleAddToCart = async () => {
     if (!selectedSize) {
@@ -411,7 +437,8 @@ export default function ProductDetails({ fetchCart }) {
     );
   }
 
-  const showImage = product.image_url && !imgError;
+  const showImage = selectedImageUrl && !imgError;
+  const hasMultipleImages = product.images && product.images.length > 1;
 
   return (
     <div style={s.page}>
@@ -449,7 +476,7 @@ export default function ProductDetails({ fetchCart }) {
           <div style={s.imageWrap}>
             {showImage ? (
               <img
-                src={product.image_url}
+                src={selectedImageUrl}
                 alt={product.name}
                 style={s.image}
                 onError={() => setImgError(true)}
@@ -470,6 +497,23 @@ export default function ProductDetails({ fetchCart }) {
               </div>
             )}
           </div>
+
+          {hasMultipleImages && (
+            <div style={s.thumbRow}>
+              {product.images.map((image) => (
+                <button
+                  key={image.id}
+                  style={s.thumbBtn(image.image_url === selectedImageUrl)}
+                  onClick={() => {
+                    setSelectedImageUrl(image.image_url);
+                    setImgError(false);
+                  }}
+                >
+                  <img src={image.image_url} alt={product.name} style={s.thumbImg} />
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* ── Info column ── */}
