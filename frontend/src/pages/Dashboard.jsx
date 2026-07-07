@@ -18,6 +18,10 @@ function Dashboard({ user, setUser }) {
     image_url: "",
   });
 
+  const [productImages, setProductImages] = useState([]);
+  const [loadingImages, setLoadingImages] = useState(false);
+  const [uploadFile, setUploadFile] = useState(null);
+
   const token = localStorage.getItem("token");
 
   const fetchProducts = async () => {
@@ -149,10 +153,130 @@ function Dashboard({ user, setUser }) {
     navigate("/login");
   };
 
+  const fetchProductImages = async (productId) => {
+    try {
+      setLoadingImages(true);
+      const res = await fetch(
+        `http://localhost:5000/api/admin/products/${productId}/images`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+      const data = await res.json();
+      setProductImages(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("Error fetching product images:", err);
+    } finally {
+      setLoadingImages(false);
+    }
+  };
+
+  const handleImageUpload = async () => {
+    if (!uploadFile || !editingProduct) return;
+
+    try {
+      const formData = new FormData();
+      formData.append("image", uploadFile);
+
+      const res = await fetch(
+        `http://localhost:5000/api/admin/products/${editingProduct.id}/images`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          body: formData,
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.error || "Could not upload image.");
+        return;
+      }
+
+      setUploadFile(null);
+      fetchProductImages(editingProduct.id);
+      fetchProducts();
+    } catch (err) {
+      console.error("Image upload error:", err);
+      alert("Something went wrong while uploading the image.");
+    }
+  };
+
+  const handleSetMainImage = async (imageId) => {
+    try {
+      const res = await fetch(
+        `http://localhost:5000/api/admin/products/${editingProduct.id}/images/${imageId}/main`,
+        {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!res.ok) {
+        const data = await res.json();
+        alert(data.error || "Could not set main image.");
+        return;
+      }
+
+      fetchProductImages(editingProduct.id);
+      fetchProducts();
+    } catch (err) {
+      console.error("Set main image error:", err);
+      alert("Something went wrong while setting the main image.");
+    }
+  };
+
+  const handleDeactivateImage = async (imageId) => {
+    const ok = window.confirm(
+      "Deactivate this image? It will no longer appear on public product pages. If it is the main image, another active image will be selected as main."
+    );
+    if (!ok) return;
+
+    try {
+      const res = await fetch(
+        `http://localhost:5000/api/admin/products/${editingProduct.id}/images/${imageId}/deactivate`,
+        {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!res.ok) {
+        const data = await res.json();
+        alert(data.error || "Could not deactivate image.");
+        return;
+      }
+
+      fetchProductImages(editingProduct.id);
+      fetchProducts();
+    } catch (err) {
+      console.error("Deactivate image error:", err);
+      alert("Something went wrong while deactivating the image.");
+    }
+  };
+
   useEffect(() => {
     fetchProducts();
     fetchOrders();
   }, []);
+
+  useEffect(() => {
+    if (editingProduct?.id) {
+      fetchProductImages(editingProduct.id);
+    } else {
+      setProductImages([]);
+    }
+    setUploadFile(null);
+  }, [editingProduct?.id]);
 
   const stats = useMemo(() => {
     const activeProducts = products.filter((p) => p.is_active !== false).length;
@@ -198,7 +322,9 @@ function Dashboard({ user, setUser }) {
             <p style={styles.subtitle}>Welcome back, {user.email}</p>
           </div>
 
-          
+          <button onClick={handleLogout} style={styles.logoutBtn}>
+            Logout
+          </button>
         </header>
 
         <section style={styles.statsGrid}>
@@ -301,9 +427,9 @@ function Dashboard({ user, setUser }) {
                 <div key={product.id} style={styles.productItem}>
                   <div style={styles.productLeft}>
                     <div style={styles.productThumb}>
-                      {product.image_url ? (
+                      {product.main_image_url || product.image_url ? (
                         <img
-                          src={product.image_url}
+                          src={product.main_image_url || product.image_url}
                           alt={product.name}
                           style={styles.productImg}
                         />
@@ -451,6 +577,58 @@ function Dashboard({ user, setUser }) {
                 Save Changes
               </button>
             </div>
+
+            <div style={styles.imagesSection}>
+              <p style={styles.smallEyebrow}>Product Images</p>
+
+              {loadingImages ? (
+                <p style={styles.muted}>Loading images...</p>
+              ) : productImages.filter((image) => image.is_active === true)
+                  .length === 0 ? (
+                <p style={styles.muted}>No active images yet.</p>
+              ) : (
+                <div style={styles.imageThumbRow}>
+                  {productImages
+                    .filter((image) => image.is_active === true)
+                    .map((image) => (
+                      <div key={image.id} style={styles.imageThumbItem}>
+                        <img
+                          src={image.image_url}
+                          alt=""
+                          style={styles.imageThumb}
+                        />
+                        {image.is_main ? (
+                          <span style={styles.mainBadge}>Main</span>
+                        ) : (
+                          <button
+                            onClick={() => handleSetMainImage(image.id)}
+                            style={styles.imageActionBtn}
+                          >
+                            Set as Main
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleDeactivateImage(image.id)}
+                          style={styles.imageDeleteBtn}
+                        >
+                          Deactivate
+                        </button>
+                      </div>
+                    ))}
+                </div>
+              )}
+
+              <div style={styles.uploadRow}>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => setUploadFile(e.target.files[0] || null)}
+                />
+                <button onClick={handleImageUpload} style={styles.editBtn}>
+                  Upload Image
+                </button>
+              </div>
+            </div>
           </section>
         )}
       </div>
@@ -486,6 +664,9 @@ const styles = {
   },
   header: {
     marginBottom: "28px",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
   },
   eyebrow: {
     color: "#b59b5b",
@@ -705,6 +886,59 @@ const styles = {
     border: "1px solid #111",
     padding: "24px",
     marginTop: "22px",
+  },
+  imagesSection: {
+    marginTop: "24px",
+    paddingTop: "20px",
+    borderTop: "1px solid #eee",
+  },
+  imageThumbRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "12px",
+    margin: "12px 0",
+  },
+  imageThumbItem: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: "6px",
+    width: "88px",
+  },
+  imageThumb: {
+    width: "80px",
+    height: "80px",
+    objectFit: "cover",
+    border: "1px solid #eee",
+  },
+  mainBadge: {
+    fontSize: "10px",
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    color: "#fff",
+    background: "#111",
+    padding: "3px 8px",
+  },
+  imageActionBtn: {
+    fontSize: "11px",
+    padding: "5px 8px",
+    border: "1px solid #111",
+    background: "#fff",
+    cursor: "pointer",
+  },
+  imageDeleteBtn: {
+    fontSize: "11px",
+    padding: "5px 8px",
+    border: "1px solid #d8b5b5",
+    background: "#fff",
+    color: "#b52a2a",
+    cursor: "pointer",
+  },
+  uploadRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    marginTop: "10px",
   },
 };
 
