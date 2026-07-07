@@ -40,6 +40,12 @@ const upload = multer({
   },
 });
 
+const CARD_IMAGE_COLUMNS = {
+  men: "men_card_image_url",
+  women: "women_card_image_url",
+  studio: "studio_card_image_url",
+};
+
 // PUT /api/admin/homepage-settings
 router.put("/", authMiddleware, adminOnly, async (req, res) => {
   try {
@@ -161,6 +167,60 @@ router.post(
       }
       console.error("Error uploading hero image:", err.message);
       res.status(500).json({ error: "Failed to upload hero image" });
+    }
+  }
+);
+
+// POST /api/admin/homepage-settings/card-image/:cardKey
+router.post(
+  "/card-image/:cardKey",
+  authMiddleware,
+  adminOnly,
+  (req, res, next) => {
+    if (!CARD_IMAGE_COLUMNS[req.params.cardKey]) {
+      return res.status(400).json({ error: "Invalid cardKey" });
+    }
+    next();
+  },
+  (req, res, next) => {
+    upload.single("image")(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ error: err.message });
+      }
+      next();
+    });
+  },
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "image file is required" });
+      }
+
+      const column = CARD_IMAGE_COLUMNS[req.params.cardKey];
+      const baseUrl = process.env.BACKEND_PUBLIC_URL || "http://localhost:5000";
+      const imageUrl = `${baseUrl}/uploads/homepage/${req.file.filename}`;
+
+      const result = await pool.query(
+        `
+        UPDATE homepage_settings
+        SET ${column} = $1, updated_at = now()
+        WHERE id = 1
+        RETURNING *
+        `,
+        [imageUrl]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: "Homepage settings row not found" });
+      }
+
+      res.status(200).json(result.rows[0]);
+    } catch (err) {
+      if (req.file) {
+        fs.unlink(req.file.path, () => {});
+      }
+      console.error("Error uploading category card image:", err.message);
+      res.status(500).json({ error: "Failed to upload category card image" });
     }
   }
 );
