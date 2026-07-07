@@ -17,6 +17,7 @@ import OrderSuccess from "./pages/OrderSuccess";
 import AdminOrders from "./pages/AdminOrders";
 import MyOrders from "./pages/MyOrders";
 import AdminCustomization from "./pages/AdminCustomization";
+import AdminHomepage from "./pages/AdminHomepage";
 import Register from "./pages/Register";
 
 
@@ -115,6 +116,7 @@ function App() {
 <Route path="/order-success" element={<OrderSuccess />} />
 <Route path="/admin/orders" element={<AdminOrders />} />
 <Route path="/admin/customization" element={<AdminCustomization />} />
+<Route path="/admin/homepage" element={<AdminHomepage />} />
 <Route path="/my-orders" element={<MyOrders />} />
   
         <Route
