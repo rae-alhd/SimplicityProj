@@ -44,6 +44,11 @@ export default function AdminCustomization() {
   const [newCollectionName, setNewCollectionName] = useState("");
   const [selectedCollectionId, setSelectedCollectionId] = useState(null);
 
+  const [designs, setDesigns] = useState([]);
+  const [designsLoading, setDesignsLoading] = useState(false);
+  const [newDesignName, setNewDesignName] = useState("");
+  const [newDesignFile, setNewDesignFile] = useState(null);
+
   useEffect(() => {
     if (!token) {
       navigate("/login");
@@ -282,6 +287,7 @@ export default function AdminCustomization() {
 
       if (selectedCollectionId === id) {
         setSelectedCollectionId(null);
+        setDesigns([]);
       }
 
       loadCustomizationData(selectedProductId);
@@ -290,8 +296,93 @@ export default function AdminCustomization() {
     }
   }
 
+  async function loadDesigns(collectionId) {
+    try {
+      setDesignsLoading(true);
+      const data = await authFetch(
+        `${API_BASE}/admin/customization/collections/${collectionId}/designs`
+      );
+      setDesigns(Array.isArray(data) ? data : []);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setDesignsLoading(false);
+    }
+  }
+
+  async function uploadDesign() {
+    if (!newDesignName.trim()) {
+      alert("Design name is required");
+      return;
+    }
+
+    if (!newDesignFile) {
+      alert("Design image is required");
+      return;
+    }
+
+    try {
+      const formData = new FormData();
+      formData.append("name", newDesignName);
+      formData.append("image", newDesignFile);
+
+      // Use plain fetch here (not authFetch) — authFetch always sets
+      // Content-Type: application/json, which breaks multipart uploads.
+      const res = await fetch(
+        `${API_BASE}/admin/customization/collections/${selectedCollectionId}/designs`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          body: formData,
+        }
+      );
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        throw new Error(data?.error || data?.message || "Upload failed");
+      }
+
+      setNewDesignName("");
+      setNewDesignFile(null);
+      loadDesigns(selectedCollectionId);
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function deactivateDesign(id) {
+    const confirmDeactivate = confirm("Deactivate this design?");
+    if (!confirmDeactivate) return;
+
+    try {
+      await authFetch(`${API_BASE}/admin/customization/designs/${id}`, {
+        method: "DELETE",
+      });
+
+      loadDesigns(selectedCollectionId);
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
   function openCollection(id) {
-    setSelectedCollectionId((current) => (current === id ? null : id));
+    setSelectedCollectionId((current) => {
+      const next = current === id ? null : id;
+
+      if (next) {
+        loadDesigns(next);
+      } else {
+        setDesigns([]);
+      }
+
+      setNewDesignName("");
+      setNewDesignFile(null);
+
+      return next;
+    });
   }
 
   const selectedProduct = products.find(
@@ -648,8 +739,75 @@ export default function AdminCustomization() {
                       </div>
 
                       {selectedCollectionId === collection.id && (
-                        <div style={styles.centerSmall}>
-                          Design upload will be added in the next stage.
+                        <div style={styles.designPanel}>
+                          <div style={styles.formRow}>
+                            <input
+                              value={newDesignName}
+                              onChange={(e) =>
+                                setNewDesignName(e.target.value)
+                              }
+                              placeholder="Design name (e.g. Yemen)"
+                              style={styles.input}
+                            />
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={(e) =>
+                                setNewDesignFile(e.target.files[0] || null)
+                              }
+                            />
+                            <button
+                              onClick={uploadDesign}
+                              style={styles.addBtn}
+                            >
+                              Upload Design
+                            </button>
+                          </div>
+
+                          {designsLoading ? (
+                            <p style={{ color: "#999" }}>
+                              Loading designs...
+                            </p>
+                          ) : designs.length === 0 ? (
+                            <p style={{ color: "#999" }}>
+                              No designs yet in this collection.
+                            </p>
+                          ) : (
+                            <div style={styles.exampleGrid}>
+                              {designs.map((design) => (
+                                <div
+                                  key={design.id}
+                                  style={styles.exampleCard}
+                                >
+                                  <img
+                                    src={design.image_url}
+                                    alt={design.name}
+                                    style={styles.exampleImg}
+                                  />
+                                  <strong>{design.name}</strong>
+                                  <p
+                                    style={{
+                                      color: "#999",
+                                      fontSize: "12px",
+                                      margin: "4px 0 8px",
+                                    }}
+                                  >
+                                    {design.is_active
+                                      ? "Active"
+                                      : "Inactive"}
+                                  </p>
+                                  <button
+                                    onClick={() =>
+                                      deactivateDesign(design.id)
+                                    }
+                                    style={styles.deleteBtn}
+                                  >
+                                    Deactivate
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -886,6 +1044,13 @@ const styles = {
     display: "flex",
     gap: "10px",
     alignItems: "center",
+  },
+  designPanel: {
+    border: "1px solid #eee",
+    background: "#fafafa",
+    padding: "18px",
+    marginTop: "8px",
+    marginBottom: "8px",
   },
   optionForm: {
     display: "grid",
