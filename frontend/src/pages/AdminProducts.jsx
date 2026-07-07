@@ -128,6 +128,8 @@ export default function AdminProducts() {
       const data = await res.json();
       console.log("Created:", data);
 
+      const createdProduct = data?.product || data;
+
       fetchProducts();
 
       setNewProduct({
@@ -141,6 +143,10 @@ export default function AdminProducts() {
         is_customizable: false,
         is_active: true,
       });
+
+      if (res.ok && createdProduct?.id) {
+        setEditingProduct(createdProduct);
+      }
     } catch (err) {
       console.error("Create error:", err);
     }
@@ -469,6 +475,10 @@ export default function AdminProducts() {
             <div>
               <p style={styles.smallEyebrow}>Product Management</p>
               <h2 style={styles.sectionTitle}>Add Product</h2>
+              <p style={styles.muted}>
+                Create the product first, then colors and image uploads will
+                appear below.
+              </p>
             </div>
           </div>
 
@@ -567,7 +577,7 @@ export default function AdminProducts() {
             </label>
 
             <button onClick={handleCreate} style={styles.addBtn}>
-              Add Product
+              Create Product
             </button>
           </div>
         </section>
