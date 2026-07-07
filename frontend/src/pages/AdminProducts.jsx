@@ -23,6 +23,13 @@ export default function AdminProducts() {
   const [productColors, setProductColors] = useState([]);
   const [uploadColorId, setUploadColorId] = useState("");
 
+  const [manageColors, setManageColors] = useState([]);
+  const [newColorName, setNewColorName] = useState("");
+  const [newColorHex, setNewColorHex] = useState("");
+  const [editingColorId, setEditingColorId] = useState(null);
+  const [editColorName, setEditColorName] = useState("");
+  const [editColorHex, setEditColorHex] = useState("");
+
   const fetchProducts = async () => {
     try {
       setLoadingProducts(true);
@@ -152,6 +159,123 @@ export default function AdminProducts() {
     }
   };
 
+  const fetchManageColors = async (productId) => {
+    try {
+      const res = await fetch(
+        `http://localhost:5000/api/admin/customization/${productId}/colors`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+      const data = await res.json();
+      setManageColors(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("Error fetching manage colors:", err);
+    }
+  };
+
+  const handleAddColor = async () => {
+    if (!editingProduct || !newColorName.trim()) return;
+
+    try {
+      const res = await fetch(
+        `http://localhost:5000/api/admin/customization/${editingProduct.id}/colors`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            color_name: newColorName.trim(),
+            color_hex: newColorHex.trim() || null,
+          }),
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.error || "Could not add color.");
+        return;
+      }
+
+      setNewColorName("");
+      setNewColorHex("");
+      fetchManageColors(editingProduct.id);
+      fetchProductColors(editingProduct.id);
+    } catch (err) {
+      console.error("Add color error:", err);
+      alert("Something went wrong while adding the color.");
+    }
+  };
+
+  const handleUpdateColor = async (color) => {
+    if (!editColorName.trim()) return;
+
+    try {
+      const res = await fetch(
+        `http://localhost:5000/api/admin/customization/colors/${color.id}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            color_name: editColorName.trim(),
+            color_hex: editColorHex.trim() || null,
+          }),
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.error || "Could not update color.");
+        return;
+      }
+
+      setEditingColorId(null);
+      fetchManageColors(editingProduct.id);
+      fetchProductColors(editingProduct.id);
+    } catch (err) {
+      console.error("Update color error:", err);
+      alert("Something went wrong while updating the color.");
+    }
+  };
+
+  const handleToggleColorActive = async (color) => {
+    try {
+      const res = await fetch(
+        `http://localhost:5000/api/admin/customization/colors/${color.id}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ is_active: !color.is_active }),
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.error || "Could not update color status.");
+        return;
+      }
+
+      fetchManageColors(editingProduct.id);
+      fetchProductColors(editingProduct.id);
+    } catch (err) {
+      console.error("Toggle color active error:", err);
+      alert("Something went wrong while updating the color status.");
+    }
+  };
+
   const handleImageUpload = async () => {
     if (!uploadFile || !editingProduct) return;
 
@@ -259,12 +383,17 @@ export default function AdminProducts() {
     if (editingProduct?.id) {
       fetchProductImages(editingProduct.id);
       fetchProductColors(editingProduct.id);
+      fetchManageColors(editingProduct.id);
     } else {
       setProductImages([]);
       setProductColors([]);
+      setManageColors([]);
     }
     setUploadFile(null);
     setUploadColorId("");
+    setNewColorName("");
+    setNewColorHex("");
+    setEditingColorId(null);
   }, [editingProduct?.id]);
 
   return (
@@ -472,6 +601,112 @@ export default function AdminProducts() {
               <button onClick={handleUpdate} style={styles.addBtn}>
                 Save Changes
               </button>
+            </div>
+
+            <div style={styles.colorsSection}>
+              <p style={styles.smallEyebrow}>Product Colors</p>
+
+              <div style={styles.colorAddRow}>
+                <input
+                  style={styles.input}
+                  placeholder="Color name (e.g. Sand Beige)"
+                  value={newColorName}
+                  onChange={(e) => setNewColorName(e.target.value)}
+                />
+                <input
+                  style={styles.input}
+                  placeholder="Hex (e.g. #d8c09a)"
+                  value={newColorHex}
+                  onChange={(e) => setNewColorHex(e.target.value)}
+                />
+                <button onClick={handleAddColor} style={styles.editBtn}>
+                  Add Color
+                </button>
+              </div>
+
+              {manageColors.length === 0 ? (
+                <p style={styles.muted}>
+                  No colors yet. This product can use general images only.
+                </p>
+              ) : (
+                <div style={styles.colorList}>
+                  {manageColors.map((color) =>
+                    editingColorId === color.id ? (
+                      <div key={color.id} style={styles.colorItem}>
+                        <input
+                          style={styles.input}
+                          value={editColorName}
+                          onChange={(e) => setEditColorName(e.target.value)}
+                        />
+                        <input
+                          style={styles.input}
+                          value={editColorHex}
+                          onChange={(e) => setEditColorHex(e.target.value)}
+                        />
+                        <button
+                          onClick={() => handleUpdateColor(color)}
+                          style={styles.editBtn}
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={() => setEditingColorId(null)}
+                          style={styles.textBtn}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <div key={color.id} style={styles.colorItem}>
+                        <span
+                          style={{
+                            ...styles.colorSwatch,
+                            background: color.color_hex || "#eee",
+                          }}
+                        />
+                        <strong>{color.color_name}</strong>
+                        <span style={styles.muted}>
+                          {color.color_hex || "No hex"}
+                        </span>
+                        <span
+                          style={
+                            color.is_active
+                              ? styles.mainBadge
+                              : styles.imageColorTag
+                          }
+                        >
+                          {color.is_active ? "Active" : "Inactive"}
+                        </span>
+                        <button
+                          onClick={() => {
+                            setEditingColorId(color.id);
+                            setEditColorName(color.color_name);
+                            setEditColorHex(color.color_hex || "");
+                          }}
+                          style={styles.editBtn}
+                        >
+                          Edit
+                        </button>
+                        {color.is_active ? (
+                          <button
+                            onClick={() => handleToggleColorActive(color)}
+                            style={styles.imageDeleteBtn}
+                          >
+                            Deactivate
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleToggleColorActive(color)}
+                            style={styles.imageActionBtn}
+                          >
+                            Reactivate
+                          </button>
+                        )}
+                      </div>
+                    )
+                  )}
+                </div>
+              )}
             </div>
 
             <div style={styles.imagesSection}>
@@ -733,6 +968,39 @@ const styles = {
     border: "1px solid #111",
     padding: "24px",
     marginTop: "22px",
+  },
+  colorsSection: {
+    marginTop: "24px",
+    paddingTop: "20px",
+    borderTop: "1px solid #eee",
+  },
+  colorAddRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: "10px",
+    marginTop: "10px",
+  },
+  colorList: {
+    display: "grid",
+    gap: "10px",
+    marginTop: "14px",
+  },
+  colorItem: {
+    border: "1px solid #eee",
+    padding: "10px 12px",
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: "10px",
+  },
+  colorSwatch: {
+    width: "22px",
+    height: "22px",
+    borderRadius: "4px",
+    border: "1px solid #ddd",
+    display: "inline-block",
+    flexShrink: 0,
   },
   imagesSection: {
     marginTop: "24px",
