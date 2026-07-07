@@ -11,6 +11,7 @@ const ordersRoutes = require("./routes/orders.routes");
 const customizationRoutes = require("./routes/customization.routes");
 const adminCustomizationRoutes = require("./routes/admin.customization.routes");
 const adminProductsRoutes = require("./routes/admin.products.routes");
+const homepageRoutes = require("./routes/homepage.routes");
 const app = express();
 
 app.use(helmet());
@@ -28,6 +29,7 @@ app.use(
 app.use("/api/customization", customizationRoutes);
 app.use("/api/admin/customization", adminCustomizationRoutes);
 app.use("/api/admin/products", adminProductsRoutes);
+app.use("/api/homepage-settings", homepageRoutes);
 app.get("/", (req, res) => {
   res.send("Simplicity Backend Running 🚀");
 });
