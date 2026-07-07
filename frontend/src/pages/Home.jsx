@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 const gold = "#C9A84C";
@@ -304,6 +305,75 @@ const styles = {
     transition: "width 0.25s",
   },
 
+  // ─── BEST SELLERS ───────────────────────────────────────
+  bestSellers: {
+    padding: "0 8vw 7rem",
+  },
+  bestSellerGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+    gap: "2rem",
+  },
+  bestSellerCard: {
+    background: "#fff",
+    border: `1px solid ${lightGray}`,
+    display: "flex",
+    flexDirection: "column",
+    cursor: "pointer",
+    transition: "transform 0.3s ease, box-shadow 0.3s ease",
+  },
+  bestSellerImageWrap: {
+    width: "100%",
+    aspectRatio: "3/4",
+    background: lightGray,
+    overflow: "hidden",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  bestSellerImage: {
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+  },
+  bestSellerImagePlaceholder: {
+    fontSize: "0.65rem",
+    letterSpacing: "0.2em",
+    textTransform: "uppercase",
+    color: midGray,
+  },
+  bestSellerBody: {
+    padding: "1.4rem",
+    display: "flex",
+    flexDirection: "column",
+    gap: "0.5rem",
+  },
+  bestSellerName: {
+    fontSize: "1rem",
+    fontWeight: 400,
+    color: black,
+    fontFamily: "'Georgia', serif",
+    margin: 0,
+  },
+  bestSellerPrice: {
+    fontSize: "0.85rem",
+    color: gold,
+    letterSpacing: "0.05em",
+  },
+  bestSellerBtn: {
+    marginTop: "0.6rem",
+    background: "transparent",
+    border: `1px solid ${black}`,
+    color: black,
+    padding: "10px 0",
+    fontSize: "0.65rem",
+    letterSpacing: "0.2em",
+    textTransform: "uppercase",
+    cursor: "pointer",
+    transition: "background 0.25s, color 0.25s",
+    fontFamily: "'Georgia', serif",
+  },
+
   // ─── FEATURES ────────────────────────────────────────────
   features: {
     padding: "6rem 8vw 7rem",
@@ -458,6 +528,9 @@ const keyframesCSS = `
   .simplicity-btn-primary:hover { background: #2a2a2a; }
   .simplicity-btn-secondary:hover { background: ${gold}15; }
 
+  .simplicity-bestseller-card:hover { transform: translateY(-4px); box-shadow: 0 20px 40px rgba(0,0,0,0.08); }
+  .simplicity-bestseller-btn:hover { background: ${black}; color: ${offWhite}; }
+
   @media (max-width: 640px) {
     .simplicity-features-grid { grid-template-columns: 1fr !important; gap: 0 !important; }
     .simplicity-footer-cta-btns { flex-direction: column; align-items: center; }
@@ -467,6 +540,23 @@ const keyframesCSS = `
 
 export default function Home() {
   const navigate = useNavigate();
+  const [products, setProducts] = useState([]);
+
+  useEffect(() => {
+    fetch("http://localhost:5000/api/products")
+      .then((res) => res.json())
+      .then((data) => setProducts(Array.isArray(data) ? data : []))
+      .catch((err) => console.error("Error fetching products:", err));
+  }, []);
+
+  const activeProducts = products.filter((p) => p.is_active !== false);
+  const withImages = activeProducts.filter(
+    (p) => p.main_image_url || p.image_url
+  );
+  const withoutImages = activeProducts.filter(
+    (p) => !(p.main_image_url || p.image_url)
+  );
+  const bestSellers = [...withImages, ...withoutImages].slice(0, 4);
 
   return (
     <>
@@ -597,6 +687,60 @@ export default function Home() {
             </div>
           </div>
         </section>
+
+        {/* ── BEST SELLERS ── */}
+        {bestSellers.length > 0 && (
+          <section style={styles.bestSellers}>
+            <span style={styles.sectionLabel}>Customer Favorites</span>
+            <h2 style={styles.sectionTitle}>Best Sellers</h2>
+
+            <div style={styles.bestSellerGrid}>
+              {bestSellers.map((product) => {
+                const displayImageUrl =
+                  product.main_image_url || product.image_url;
+
+                return (
+                  <div
+                    key={product.id}
+                    className="simplicity-bestseller-card"
+                    style={styles.bestSellerCard}
+                  >
+                    <div style={styles.bestSellerImageWrap}>
+                      {displayImageUrl ? (
+                        <img
+                          src={displayImageUrl}
+                          alt={product.name}
+                          style={styles.bestSellerImage}
+                        />
+                      ) : (
+                        <span style={styles.bestSellerImagePlaceholder}>
+                          No Image
+                        </span>
+                      )}
+                    </div>
+
+                    <div style={styles.bestSellerBody}>
+                      <h3 style={styles.bestSellerName}>{product.name}</h3>
+                      <span style={styles.bestSellerPrice}>
+                        {product.base_price !== undefined &&
+                        product.base_price !== null
+                          ? `$${Number(product.base_price).toFixed(2)}`
+                          : "—"}
+                      </span>
+                      <button
+                        className="simplicity-bestseller-btn"
+                        style={styles.bestSellerBtn}
+                        onClick={() => navigate(`/products/${product.id}`)}
+                      >
+                        View Details
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         {/* ── FEATURES ── */}
         <section style={styles.features}>
