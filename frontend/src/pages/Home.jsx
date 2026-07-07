@@ -15,6 +15,18 @@ const styles = {
     overflowX: "hidden",
   },
 
+  // ─── ANNOUNCEMENT ───────────────────────────────────────
+  announcementBar: {
+    textAlign: "center",
+    padding: "10px 8vw",
+    backgroundColor: black,
+    color: gold,
+    fontSize: "0.72rem",
+    letterSpacing: "0.15em",
+    textTransform: "uppercase",
+    fontStyle: "italic",
+  },
+
   // ─── HERO ───────────────────────────────────────────────
   hero: {
     position: "relative",
@@ -25,6 +37,16 @@ const styles = {
     alignItems: "flex-start",
     padding: "0 8vw",
     overflow: "hidden",
+  },
+  heroImage: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    height: "100%",
+    width: "45%",
+    objectFit: "cover",
+    opacity: 0.9,
+    zIndex: 0,
   },
   heroAccentLine: {
     position: "absolute",
@@ -541,12 +563,20 @@ const keyframesCSS = `
 export default function Home() {
   const navigate = useNavigate();
   const [products, setProducts] = useState([]);
+  const [settings, setSettings] = useState({});
 
   useEffect(() => {
     fetch("http://localhost:5000/api/products")
       .then((res) => res.json())
       .then((data) => setProducts(Array.isArray(data) ? data : []))
       .catch((err) => console.error("Error fetching products:", err));
+  }, []);
+
+  useEffect(() => {
+    fetch("http://localhost:5000/api/homepage-settings")
+      .then((res) => res.json())
+      .then((data) => setSettings(data || {}))
+      .catch((err) => console.error("Error fetching homepage settings:", err));
   }, []);
 
   const activeProducts = products.filter((p) => p.is_active !== false);
@@ -558,16 +588,37 @@ export default function Home() {
   );
   const bestSellers = [...withImages, ...withoutImages].slice(0, 4);
 
+  const heroTitle = settings.hero_title || "Wear Less.";
+  const heroHighlight = settings.hero_highlight || "Mean More.";
+  const heroSubtitle =
+    settings.hero_subtitle ||
+    "Simplicity is a premium minimal clothing brand. Every piece is crafted for quiet confidence — and if you want something truly yours, our Custom Studio lets you choose from curated options approved by the brand.";
+  const heroImageUrl = settings.hero_image_url || "";
+  const primaryButtonText = settings.primary_button_text || "Shop Collection";
+  const primaryButtonLink = settings.primary_button_link || "/products";
+  const secondaryButtonText = settings.secondary_button_text || "Open Studio";
+  const secondaryButtonLink = settings.secondary_button_link || "/customize";
+  const announcementText = settings.announcement_text || "";
+
   return (
     <>
       <style>{keyframesCSS}</style>
       <div style={styles.page}>
+
+        {/* ── ANNOUNCEMENT ── */}
+        {announcementText && (
+          <div style={styles.announcementBar}>{announcementText}</div>
+        )}
 
         {/* ── HERO ── */}
         <section style={styles.hero}>
           <div style={styles.heroAccentLineLeft} />
           <div style={styles.heroAccentLine} />
           <div style={styles.heroWatermark} aria-hidden="true">Simplicity</div>
+
+          {heroImageUrl && (
+            <img src={heroImageUrl} alt="" style={styles.heroImage} />
+          )}
 
           <div style={styles.heroContent} className="simplicity-hero-content">
             <div style={styles.heroEyebrow}>
@@ -576,30 +627,28 @@ export default function Home() {
             </div>
 
             <h1 style={styles.heroHeadline}>
-              Wear Less.<br />
-              <em style={styles.heroHeadlineItalic}>Mean More.</em>
+              {heroTitle}<br />
+              <em style={styles.heroHeadlineItalic}>{heroHighlight}</em>
             </h1>
 
             <p style={styles.heroSubtitle}>
-              Simplicity is a premium minimal clothing brand. Every piece is crafted
-              for quiet confidence — and if you want something truly yours, our Custom 
-              Studio lets you choose from curated options approved by the brand.
+              {heroSubtitle}
             </p>
 
             <div style={styles.heroCta}>
               <button
                 className="simplicity-btn-primary"
                 style={styles.btnPrimary}
-                onClick={() => navigate("/products")}
+                onClick={() => navigate(primaryButtonLink)}
               >
-                Shop Collection
+                {primaryButtonText}
               </button>
               <button
                 className="simplicity-btn-secondary"
                 style={styles.btnSecondary}
-                onClick={() => navigate("/customize")}
+                onClick={() => navigate(secondaryButtonLink)}
               >
-                Open Studio
+                {secondaryButtonText}
               </button>
             </div>
           </div>
