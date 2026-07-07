@@ -1,4 +1,8 @@
 const express = require("express");
+const path = require("path");
+const fs = require("fs");
+const crypto = require("crypto");
+const multer = require("multer");
 const router = express.Router();
 const pool = require("../config/db");
 const { authMiddleware } = require("../middleware/auth.middleware");
@@ -598,6 +602,187 @@ router.delete("/collections/:id", async (req, res) => {
     res.json(result.rows[0]);
   } catch (err) {
     console.error("Deactivate design collection error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// -------------------- COLLECTION DESIGNS --------------------
+
+const DESIGN_UPLOAD_DIR = path.join(__dirname, "..", "..", "uploads", "designs");
+
+const DESIGN_MIME_EXTENSIONS = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+};
+
+const designStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    fs.mkdirSync(DESIGN_UPLOAD_DIR, { recursive: true });
+    cb(null, DESIGN_UPLOAD_DIR);
+  },
+  filename: (req, file, cb) => {
+    const ext = DESIGN_MIME_EXTENSIONS[file.mimetype] || "";
+    const uniqueName = `design-${req.params.collectionId}-${Date.now()}-${crypto
+      .randomBytes(6)
+      .toString("hex")}${ext}`;
+    cb(null, uniqueName);
+  },
+});
+
+const uploadDesignImage = multer({
+  storage: designStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!DESIGN_MIME_EXTENSIONS[file.mimetype]) {
+      return cb(new Error("Only JPEG, PNG, and WEBP images are allowed"));
+    }
+    cb(null, true);
+  },
+});
+
+async function ensureCollectionExists(req, res, next) {
+  try {
+    const { collectionId } = req.params;
+    const result = await pool.query(
+      "SELECT id FROM design_collections WHERE id = $1",
+      [collectionId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Collection not found" });
+    }
+
+    next();
+  } catch (err) {
+    console.error("Check collection exists error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+}
+
+// GET /api/admin/customization/collections/:collectionId/designs
+router.get(
+  "/collections/:collectionId/designs",
+  ensureCollectionExists,
+  async (req, res) => {
+    try {
+      const result = await pool.query(
+        `
+        SELECT *
+        FROM collection_designs
+        WHERE collection_id = $1
+        ORDER BY sort_order ASC, id ASC
+        `,
+        [req.params.collectionId]
+      );
+
+      res.json(result.rows);
+    } catch (err) {
+      console.error("Get collection designs error:", err);
+      res.status(500).json({ error: "Server error" });
+    }
+  }
+);
+
+// POST /api/admin/customization/collections/:collectionId/designs
+router.post(
+  "/collections/:collectionId/designs",
+  ensureCollectionExists,
+  (req, res, next) => {
+    uploadDesignImage.single("image")(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ error: err.message });
+      }
+      next();
+    });
+  },
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "image file is required" });
+      }
+
+      const { name, sort_order = 0 } = req.body;
+
+      if (!name) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(400).json({ error: "name is required" });
+      }
+
+      const baseUrl = process.env.BACKEND_PUBLIC_URL || "http://localhost:5000";
+      const imageUrl = `${baseUrl}/uploads/designs/${req.file.filename}`;
+
+      const result = await pool.query(
+        `
+        INSERT INTO collection_designs
+        (collection_id, name, image_url, sort_order)
+        VALUES ($1, $2, $3, $4)
+        RETURNING *
+        `,
+        [req.params.collectionId, name, imageUrl, sort_order]
+      );
+
+      res.status(201).json(result.rows[0]);
+    } catch (err) {
+      if (req.file) {
+        fs.unlink(req.file.path, () => {});
+      }
+      console.error("Add collection design error:", err);
+      res.status(500).json({ error: "Server error" });
+    }
+  }
+);
+
+// PATCH /api/admin/customization/designs/:id
+router.patch("/designs/:id", async (req, res) => {
+  try {
+    const { name, sort_order, is_active } = req.body;
+
+    const result = await pool.query(
+      `
+      UPDATE collection_designs
+      SET
+        name = COALESCE($1, name),
+        sort_order = COALESCE($2, sort_order),
+        is_active = COALESCE($3, is_active)
+      WHERE id = $4
+      RETURNING *
+      `,
+      [name, sort_order, is_active, req.params.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Design not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Update collection design error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// DELETE /api/admin/customization/designs/:id
+// Soft delete only — sets is_active = false. Does not remove the uploaded file.
+router.delete("/designs/:id", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      UPDATE collection_designs
+      SET is_active = false
+      WHERE id = $1
+      RETURNING *
+      `,
+      [req.params.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Design not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Deactivate collection design error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
