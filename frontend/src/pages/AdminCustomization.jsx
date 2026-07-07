@@ -40,6 +40,10 @@ export default function AdminCustomization() {
     caption: "",
   });
 
+  const [collections, setCollections] = useState([]);
+  const [newCollectionName, setNewCollectionName] = useState("");
+  const [selectedCollectionId, setSelectedCollectionId] = useState(null);
+
   useEffect(() => {
     if (!token) {
       navigate("/login");
@@ -102,17 +106,20 @@ export default function AdminCustomization() {
       setSectionLoading(true);
       setError("");
 
-      const [colorsData, sizesData, optionsData, examplesData] = await Promise.all([
-        authFetch(`${API_BASE}/admin/customization/${productId}/colors`),
-        authFetch(`${API_BASE}/admin/customization/${productId}/sizes`),
-        authFetch(`${API_BASE}/admin/customization/${productId}/options`),
-        authFetch(`${API_BASE}/admin/customization/${productId}/examples`),
-      ]);
+      const [colorsData, sizesData, optionsData, examplesData, collectionsData] =
+        await Promise.all([
+          authFetch(`${API_BASE}/admin/customization/${productId}/colors`),
+          authFetch(`${API_BASE}/admin/customization/${productId}/sizes`),
+          authFetch(`${API_BASE}/admin/customization/${productId}/options`),
+          authFetch(`${API_BASE}/admin/customization/${productId}/examples`),
+          authFetch(`${API_BASE}/admin/customization/collections`),
+        ]);
 
       setColors(Array.isArray(colorsData) ? colorsData : []);
       setSizes(Array.isArray(sizesData) ? sizesData : []);
       setOptions(Array.isArray(optionsData) ? optionsData : []);
       setExamples(Array.isArray(examplesData) ? examplesData : []);
+      setCollections(Array.isArray(collectionsData) ? collectionsData : []);
 
       setSectionLoading(false);
     } catch (err) {
@@ -242,8 +249,57 @@ export default function AdminCustomization() {
     }
   }
 
+  async function addCollection() {
+    if (!newCollectionName.trim()) {
+      alert("Collection name is required");
+      return;
+    }
+
+    try {
+      await authFetch(`${API_BASE}/admin/customization/collections`, {
+        method: "POST",
+        body: JSON.stringify({
+          product_id: selectedProductId,
+          name: newCollectionName,
+        }),
+      });
+
+      setNewCollectionName("");
+      loadCustomizationData(selectedProductId);
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function deactivateCollection(id) {
+    const confirmDeactivate = confirm("Deactivate this collection?");
+    if (!confirmDeactivate) return;
+
+    try {
+      await authFetch(`${API_BASE}/admin/customization/collections/${id}`, {
+        method: "DELETE",
+      });
+
+      if (selectedCollectionId === id) {
+        setSelectedCollectionId(null);
+      }
+
+      loadCustomizationData(selectedProductId);
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  function openCollection(id) {
+    setSelectedCollectionId((current) => (current === id ? null : id));
+  }
+
   const selectedProduct = products.find(
     (p) => Number(p.id) === Number(selectedProductId)
+  );
+
+  const productCollections = collections.filter(
+    (c) => Number(c.product_id) === Number(selectedProductId)
   );
 
   if (loading) {
@@ -522,6 +578,83 @@ export default function AdminCustomization() {
                     </button>
                   </div>
                 ))}
+              </div>
+            </section>
+
+            {/* DESIGN COLLECTIONS */}
+            <section style={styles.cardWide}>
+              <h2 style={styles.cardTitle}>Design Collections</h2>
+
+              <div style={styles.formRow}>
+                <input
+                  value={newCollectionName}
+                  onChange={(e) => setNewCollectionName(e.target.value)}
+                  placeholder="Collection name (e.g. Country)"
+                  style={styles.input}
+                />
+                <button onClick={addCollection} style={styles.addBtn}>
+                  Add Collection
+                </button>
+              </div>
+
+              <div style={styles.list}>
+                {productCollections.length === 0 ? (
+                  <p style={{ color: "#999" }}>
+                    No collections yet for this product.
+                  </p>
+                ) : (
+                  productCollections.map((collection) => (
+                    <div key={collection.id}>
+                      <div
+                        style={{
+                          ...styles.listItem,
+                          borderColor:
+                            selectedCollectionId === collection.id
+                              ? "#111"
+                              : "#eee",
+                        }}
+                      >
+                        <div>
+                          <strong>{collection.name}</strong>
+                          <p
+                            style={{
+                              color: "#999",
+                              fontSize: "12px",
+                              margin: "4px 0 0",
+                            }}
+                          >
+                            {collection.product_name
+                              ? `${collection.product_name} · `
+                              : ""}
+                            {collection.is_active ? "Active" : "Inactive"}
+                          </p>
+                        </div>
+                        <div style={{ display: "flex", gap: "8px" }}>
+                          <button
+                            onClick={() => openCollection(collection.id)}
+                            style={styles.addBtn}
+                          >
+                            {selectedCollectionId === collection.id
+                              ? "Close"
+                              : "Open"}
+                          </button>
+                          <button
+                            onClick={() => deactivateCollection(collection.id)}
+                            style={styles.deleteBtn}
+                          >
+                            Deactivate
+                          </button>
+                        </div>
+                      </div>
+
+                      {selectedCollectionId === collection.id && (
+                        <div style={styles.centerSmall}>
+                          Design upload will be added in the next stage.
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
               </div>
             </section>
           </div>
