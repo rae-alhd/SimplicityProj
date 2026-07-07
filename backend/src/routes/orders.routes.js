@@ -40,7 +40,7 @@ router.post("/", authMiddleware, async (req, res) => {
     // 1. Fetch user's cart items joined with product prices and customization details
 const cartResult = await client.query(
   `
-  SELECT 
+  SELECT
     ci.product_id,
     ci.size,
     ci.color,
@@ -50,6 +50,7 @@ const cartResult = await client.query(
     ci.customization_option_id,
     ci.custom_text,
     ci.custom_note,
+    ci.design_id,
 
     p.base_price,
     p.customization_extra_price,
@@ -58,6 +59,8 @@ const cartResult = await client.query(
 
     co.option_label AS customization_label,
     co.extra_price AS customization_option_extra_price,
+
+    cd.name AS design_label,
 
     (
       p.base_price
@@ -71,6 +74,7 @@ const cartResult = await client.query(
   FROM cart_items ci
   JOIN products p ON p.id = ci.product_id
   LEFT JOIN customization_options co ON ci.customization_option_id = co.id
+  LEFT JOIN collection_designs cd ON ci.design_id = cd.id
   WHERE ci.user_id = $1
   `,
   [userId]
@@ -102,23 +106,24 @@ const cartResult = await client.query(
 for (const item of cartItems) {
   await client.query(
     `
-    INSERT INTO order_items 
+    INSERT INTO order_items
     (
-      order_id, 
-      product_id, 
-      product_name, 
-      size, 
-      color, 
-      quantity, 
+      order_id,
+      product_id,
+      product_name,
+      size,
+      color,
+      quantity,
       unit_price,
       is_customized,
       customization_label,
       chosen_color,
       chosen_size,
       custom_text,
-      custom_note
+      custom_note,
+      design_label
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
     `,
     [
       order.id,
@@ -135,6 +140,7 @@ for (const item of cartItems) {
       item.size || null,
       item.custom_text || null,
       item.custom_note || null,
+      item.design_label || null,
     ]
   );
 }
