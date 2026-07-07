@@ -546,6 +546,21 @@ function Dashboard({ user, setUser }) {
           </button>
         </header>
 
+        <section style={styles.quickActions}>
+          <button onClick={() => navigate("/admin/orders")} style={styles.actionBtn}>
+            Manage Orders
+          </button>
+          <button onClick={() => navigate("/admin/customization")} style={styles.actionBtn}>
+            Manage Customization
+          </button>
+          <button onClick={() => navigate("/products")} style={styles.actionBtnLight}>
+            View Storefront
+          </button>
+          <button onClick={() => navigate("/customize")} style={styles.actionBtnLight}>
+            Preview Customer Studio
+          </button>
+        </section>
+
         <section style={styles.statsGrid}>
           <StatCard label="Total Products" value={stats.totalProducts} />
           <StatCard label="Active Products" value={stats.activeProducts} />
@@ -602,21 +617,6 @@ function Dashboard({ user, setUser }) {
           <p style={{ ...styles.muted, marginTop: "18px" }}>
             Estimated Profit: Add product cost price to calculate profit.
           </p>
-        </section>
-
-        <section style={styles.quickActions}>
-          <button onClick={() => navigate("/admin/orders")} style={styles.actionBtn}>
-            Manage Orders
-          </button>
-          <button onClick={() => navigate("/admin/customization")} style={styles.actionBtn}>
-            Open Studio
-          </button>
-          <button onClick={() => navigate("/products")} style={styles.actionBtnLight}>
-            View Store
-          </button>
-          <button onClick={() => navigate("/customize")} style={styles.actionBtnLight}>
-            Preview Customize Page
-          </button>
         </section>
 
         <section style={styles.formPanel}>
