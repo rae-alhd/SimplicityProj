@@ -22,6 +22,19 @@ function Dashboard({ user, setUser }) {
   const [loadingImages, setLoadingImages] = useState(false);
   const [uploadFile, setUploadFile] = useState(null);
 
+  const [homepageSettings, setHomepageSettings] = useState({
+    hero_title: "",
+    hero_highlight: "",
+    hero_subtitle: "",
+    hero_image_url: "",
+    primary_button_text: "",
+    primary_button_link: "",
+    secondary_button_text: "",
+    secondary_button_link: "",
+    announcement_text: "",
+  });
+  const [loadingHomepageSettings, setLoadingHomepageSettings] = useState(true);
+
   const token = localStorage.getItem("token");
 
   const fetchProducts = async () => {
@@ -264,9 +277,61 @@ function Dashboard({ user, setUser }) {
     }
   };
 
+  const fetchHomepageSettings = async () => {
+    try {
+      setLoadingHomepageSettings(true);
+      const res = await fetch("http://localhost:5000/api/homepage-settings");
+      const data = await res.json();
+      setHomepageSettings({
+        hero_title: data.hero_title || "",
+        hero_highlight: data.hero_highlight || "",
+        hero_subtitle: data.hero_subtitle || "",
+        hero_image_url: data.hero_image_url || "",
+        primary_button_text: data.primary_button_text || "",
+        primary_button_link: data.primary_button_link || "",
+        secondary_button_text: data.secondary_button_text || "",
+        secondary_button_link: data.secondary_button_link || "",
+        announcement_text: data.announcement_text || "",
+      });
+    } catch (err) {
+      console.error("Error fetching homepage settings:", err);
+    } finally {
+      setLoadingHomepageSettings(false);
+    }
+  };
+
+  const handleSaveHomepageSettings = async () => {
+    try {
+      const res = await fetch(
+        "http://localhost:5000/api/admin/homepage-settings",
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(homepageSettings),
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.error || "Could not save homepage settings.");
+        return;
+      }
+
+      alert("Homepage settings saved successfully.");
+    } catch (err) {
+      console.error("Save homepage settings error:", err);
+      alert("Something went wrong while saving homepage settings.");
+    }
+  };
+
   useEffect(() => {
     fetchProducts();
     fetchOrders();
+    fetchHomepageSettings();
   }, []);
 
   useEffect(() => {
@@ -406,6 +471,132 @@ function Dashboard({ user, setUser }) {
 
             <button onClick={handleCreate} style={styles.addBtn}>
               Add Product
+            </button>
+          </div>
+        </section>
+
+        <section style={styles.formPanel}>
+          <div style={styles.sectionHeader}>
+            <div>
+              <p style={styles.smallEyebrow}>Site Content</p>
+              <h2 style={styles.sectionTitle}>Homepage Settings</h2>
+            </div>
+            <span style={styles.muted}>
+              {loadingHomepageSettings ? "Loading..." : ""}
+            </span>
+          </div>
+
+          <div style={styles.formGrid}>
+            <input
+              style={styles.input}
+              placeholder="Hero Title"
+              value={homepageSettings.hero_title}
+              onChange={(e) =>
+                setHomepageSettings({
+                  ...homepageSettings,
+                  hero_title: e.target.value,
+                })
+              }
+            />
+
+            <input
+              style={styles.input}
+              placeholder="Hero Highlighted Line"
+              value={homepageSettings.hero_highlight}
+              onChange={(e) =>
+                setHomepageSettings({
+                  ...homepageSettings,
+                  hero_highlight: e.target.value,
+                })
+              }
+            />
+
+            <input
+              style={styles.input}
+              placeholder="Hero Image URL"
+              value={homepageSettings.hero_image_url}
+              onChange={(e) =>
+                setHomepageSettings({
+                  ...homepageSettings,
+                  hero_image_url: e.target.value,
+                })
+              }
+            />
+
+            <input
+              style={{ ...styles.input, gridColumn: "span 3" }}
+              placeholder="Hero Subtitle"
+              value={homepageSettings.hero_subtitle}
+              onChange={(e) =>
+                setHomepageSettings({
+                  ...homepageSettings,
+                  hero_subtitle: e.target.value,
+                })
+              }
+            />
+
+            <input
+              style={styles.input}
+              placeholder="Primary Button Text"
+              value={homepageSettings.primary_button_text}
+              onChange={(e) =>
+                setHomepageSettings({
+                  ...homepageSettings,
+                  primary_button_text: e.target.value,
+                })
+              }
+            />
+
+            <input
+              style={styles.input}
+              placeholder="Primary Button Link"
+              value={homepageSettings.primary_button_link}
+              onChange={(e) =>
+                setHomepageSettings({
+                  ...homepageSettings,
+                  primary_button_link: e.target.value,
+                })
+              }
+            />
+
+            <input
+              style={styles.input}
+              placeholder="Secondary Button Text"
+              value={homepageSettings.secondary_button_text}
+              onChange={(e) =>
+                setHomepageSettings({
+                  ...homepageSettings,
+                  secondary_button_text: e.target.value,
+                })
+              }
+            />
+
+            <input
+              style={styles.input}
+              placeholder="Secondary Button Link"
+              value={homepageSettings.secondary_button_link}
+              onChange={(e) =>
+                setHomepageSettings({
+                  ...homepageSettings,
+                  secondary_button_link: e.target.value,
+                })
+              }
+            />
+
+            <input
+              style={{ ...styles.input, gridColumn: "span 3" }}
+              placeholder="Announcement Text (optional)"
+              value={homepageSettings.announcement_text}
+              onChange={(e) =>
+                setHomepageSettings({
+                  ...homepageSettings,
+                  announcement_text: e.target.value,
+                })
+              }
+            />
+
+            <button onClick={handleSaveHomepageSettings} style={styles.addBtn}>
+              Save Homepage Settings
             </button>
           </div>
         </section>
