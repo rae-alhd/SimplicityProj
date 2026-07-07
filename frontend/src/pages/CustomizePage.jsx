@@ -152,6 +152,7 @@ function CustomizePage() {
           customization_option_id: selectedOption.id,
           custom_text: customText,
           custom_note: customNote,
+          design_id: selectedDesign?.id || null,
         }),
       });
 
