@@ -281,10 +281,27 @@ export default function AdminCustomization() {
 
           {selectedProduct && (
             <div style={styles.productInfo}>
-              <h2 style={styles.productName}>{selectedProduct.name}</h2>
-              <p style={styles.productMeta}>
-                {selectedProduct.category} · {selectedProduct.target_group}
-              </p>
+              <div style={styles.productInfoTop}>
+                <div style={styles.productThumbWrap}>
+                  {selectedProduct.main_image_url || selectedProduct.image_url ? (
+                    <img
+                      src={selectedProduct.main_image_url || selectedProduct.image_url}
+                      alt={selectedProduct.name}
+                      style={styles.productThumbImg}
+                    />
+                  ) : (
+                    <span style={styles.productThumbPlaceholder}>No Image</span>
+                  )}
+                </div>
+
+                <div>
+                  <span style={styles.productIdTag}>#{selectedProduct.id}</span>
+                  <h2 style={styles.productName}>{selectedProduct.name}</h2>
+                  <p style={styles.productMeta}>
+                    {selectedProduct.category} · {selectedProduct.target_group}
+                  </p>
+                </div>
+              </div>
 
               <button
                 onClick={() =>
@@ -582,6 +599,42 @@ const styles = {
   productInfo: {
     borderLeft: "1px solid #eee",
     paddingLeft: "24px",
+  },
+  productInfoTop: {
+    display: "flex",
+    alignItems: "center",
+    gap: "16px",
+    marginBottom: "14px",
+  },
+  productThumbWrap: {
+    width: "64px",
+    height: "64px",
+    flexShrink: 0,
+    background: "#f2f0eb",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  productThumbImg: {
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+  },
+  productThumbPlaceholder: {
+    fontSize: "9px",
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    color: "#999",
+  },
+  productIdTag: {
+    display: "inline-block",
+    fontSize: "11px",
+    letterSpacing: "0.08em",
+    color: "#999",
+    border: "1px solid #e0dbd4",
+    padding: "2px 7px",
+    marginBottom: "6px",
   },
   productName: {
     margin: 0,
