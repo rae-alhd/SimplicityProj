@@ -21,6 +21,8 @@ function Dashboard({ user, setUser }) {
   const [productImages, setProductImages] = useState([]);
   const [loadingImages, setLoadingImages] = useState(false);
   const [uploadFile, setUploadFile] = useState(null);
+  const [productColors, setProductColors] = useState([]);
+  const [uploadColorId, setUploadColorId] = useState("");
 
   const [homepageSettings, setHomepageSettings] = useState({
     hero_title: "",
@@ -198,12 +200,27 @@ function Dashboard({ user, setUser }) {
     }
   };
 
+  const fetchProductColors = async (productId) => {
+    try {
+      const res = await fetch(
+        `http://localhost:5000/api/products/${productId}/colors`
+      );
+      const data = await res.json();
+      setProductColors(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("Error fetching product colors:", err);
+    }
+  };
+
   const handleImageUpload = async () => {
     if (!uploadFile || !editingProduct) return;
 
     try {
       const formData = new FormData();
       formData.append("image", uploadFile);
+      if (uploadColorId) {
+        formData.append("color_id", uploadColorId);
+      }
 
       const res = await fetch(
         `http://localhost:5000/api/admin/products/${editingProduct.id}/images`,
@@ -224,6 +241,7 @@ function Dashboard({ user, setUser }) {
       }
 
       setUploadFile(null);
+      setUploadColorId("");
       fetchProductImages(editingProduct.id);
       fetchProducts();
     } catch (err) {
@@ -431,10 +449,13 @@ function Dashboard({ user, setUser }) {
   useEffect(() => {
     if (editingProduct?.id) {
       fetchProductImages(editingProduct.id);
+      fetchProductColors(editingProduct.id);
     } else {
       setProductImages([]);
+      setProductColors([]);
     }
     setUploadFile(null);
+    setUploadColorId("");
   }, [editingProduct?.id]);
 
   const stats = useMemo(() => {
@@ -1131,6 +1152,15 @@ function Dashboard({ user, setUser }) {
                           alt=""
                           style={styles.imageThumb}
                         />
+                        <span style={styles.imageColorTag}>
+                          {image.color_id
+                            ? `Color: ${
+                                productColors.find(
+                                  (c) => Number(c.id) === Number(image.color_id)
+                                )?.color_name || `#${image.color_id}`
+                              }`
+                            : "General image"}
+                        </span>
                         {image.is_main ? (
                           <span style={styles.mainBadge}>Main</span>
                         ) : (
@@ -1158,6 +1188,18 @@ function Dashboard({ user, setUser }) {
                   accept="image/*"
                   onChange={(e) => setUploadFile(e.target.files[0] || null)}
                 />
+                <select
+                  value={uploadColorId}
+                  onChange={(e) => setUploadColorId(e.target.value)}
+                  style={styles.input}
+                >
+                  <option value="">General image / No specific color</option>
+                  {productColors.map((color) => (
+                    <option key={color.id} value={color.id}>
+                      {color.color_name}
+                    </option>
+                  ))}
+                </select>
                 <button onClick={handleImageUpload} style={styles.editBtn}>
                   Upload Image
                 </button>
@@ -1452,6 +1494,12 @@ const styles = {
     color: "#fff",
     background: "#111",
     padding: "3px 8px",
+  },
+  imageColorTag: {
+    fontSize: "10px",
+    letterSpacing: "0.05em",
+    color: "#999",
+    textAlign: "center",
   },
   imageActionBtn: {
     fontSize: "11px",
