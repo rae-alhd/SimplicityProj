@@ -127,6 +127,29 @@ function OrderCard({ order }) {
         <strong>Note:</strong> {item.custom_note}
       </div>
     )}
+
+    {item.design_label && (
+      <div style={s.designBox}>
+        <div style={s.designBoxText}>
+          {item.collection_name && (
+            <div>
+              <strong>Collection:</strong> {item.collection_name}
+            </div>
+          )}
+          <div>
+            <strong>Design:</strong> {item.design_label}
+          </div>
+        </div>
+
+        {item.design_image_url && (
+          <img
+            src={item.design_image_url}
+            alt={item.design_label}
+            style={s.designThumb}
+          />
+        )}
+      </div>
+    )}
   </div>
 )}
                   </div>
@@ -483,7 +506,30 @@ const s = {
     textTransform: "uppercase",
     fontFamily: "sans-serif",
   },
-  
+
+  designBox: {
+    marginTop: "6px",
+    paddingTop: "6px",
+    borderTop: "1px solid #eee4d8",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "8px",
+  },
+  designBoxText: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "2px",
+  },
+  designThumb: {
+    width: "32px",
+    height: "32px",
+    borderRadius: "6px",
+    objectFit: "cover",
+    border: "1px solid #eee4d8",
+    flexShrink: 0,
+  },
+
   itemPricing: {
     display: "flex", flexDirection: "column",
     alignItems: "flex-end", gap: "4px",
