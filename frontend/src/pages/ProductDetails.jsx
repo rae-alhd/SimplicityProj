@@ -346,6 +346,24 @@ const s = {
 ───────────────────────────────────────────── */
 const SIZES = ["S", "M", "L", "XL", "2XL", "3XL", "4XL"];
 
+/* Resolve which set of images to show for the current color selection:
+   - no color selected -> general images (color_id === null), else all images
+   - color selected -> that color's images, else general images only */
+function getActiveGallery(product, selectedColor) {
+  const images = product?.images || [];
+  const generalImages = images.filter((img) => img.color_id === null);
+
+  if (!selectedColor) {
+    return generalImages.length > 0 ? generalImages : images;
+  }
+
+  const colorImages = images.filter(
+    (img) => Number(img.color_id) === Number(selectedColor.id)
+  );
+
+  return colorImages.length > 0 ? colorImages : generalImages;
+}
+
 export default function ProductDetails({ fetchCart }) {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -386,9 +404,22 @@ export default function ProductDetails({ fetchCart }) {
   }, [id]);
 
   useEffect(() => {
-    setSelectedImageUrl(product?.main_image_url || product?.image_url || null);
+    if (!product) {
+      setSelectedImageUrl(null);
+      setImgError(false);
+      return;
+    }
+
+    const activeGallery = getActiveGallery(product, selectedColor);
+
+    if (activeGallery.length > 0) {
+      setSelectedImageUrl(activeGallery[0].image_url);
+    } else {
+      setSelectedImageUrl(product.main_image_url || product.image_url || null);
+    }
+
     setImgError(false);
-  }, [product]);
+  }, [product, selectedColor]);
 
   useEffect(() => {
     setColors([]);
@@ -403,7 +434,7 @@ export default function ProductDetails({ fetchCart }) {
         const activeColors = Array.isArray(data) ? data : [];
         setColors(activeColors);
         if (activeColors.length > 0) {
-          setSelectedColor(activeColors[0].color_name);
+          setSelectedColor(activeColors[0]);
         }
       })
       .catch((err) => {
@@ -434,7 +465,7 @@ export default function ProductDetails({ fetchCart }) {
         },
         body: JSON.stringify({
           product_id: product.id,
-          color: selectedColor || "Default",
+          color: selectedColor?.color_name || "Default",
           size: selectedSize,
           quantity: qty,
         }),
@@ -485,7 +516,8 @@ export default function ProductDetails({ fetchCart }) {
   }
 
   const showImage = selectedImageUrl && !imgError;
-  const hasMultipleImages = product.images && product.images.length > 1;
+  const activeGallery = getActiveGallery(product, selectedColor);
+  const hasMultipleImages = activeGallery.length > 1;
 
   return (
     <div style={s.page}>
@@ -547,7 +579,7 @@ export default function ProductDetails({ fetchCart }) {
 
           {hasMultipleImages && (
             <div style={s.thumbRow}>
-              {product.images.map((image) => (
+              {activeGallery.map((image) => (
                 <button
                   key={image.id}
                   style={s.thumbBtn(image.image_url === selectedImageUrl)}
@@ -632,7 +664,7 @@ export default function ProductDetails({ fetchCart }) {
                 Select Color
                 {selectedColor && (
                   <span style={{ color: "#1a1a1a", marginLeft: "10px" }}>
-                    — {selectedColor}
+                    — {selectedColor.color_name}
                   </span>
                 )}
               </span>
@@ -642,9 +674,9 @@ export default function ProductDetails({ fetchCart }) {
                     key={color.id}
                     title={color.color_name}
                     aria-label={color.color_name}
-                    onClick={() => setSelectedColor(color.color_name)}
+                    onClick={() => setSelectedColor(color)}
                     style={{
-                      ...s.colorSwatchBtn(selectedColor === color.color_name),
+                      ...s.colorSwatchBtn(selectedColor?.id === color.id),
                       backgroundColor: color.color_hex || "#eee",
                     }}
                   />
