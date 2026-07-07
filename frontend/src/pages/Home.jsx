@@ -241,6 +241,13 @@ const styles = {
     padding: "2rem",
     transition: "transform 0.35s ease",
   },
+  cardImage: {
+    position: "absolute",
+    inset: 0,
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+  },
   cardOverlay: {
     position: "absolute",
     inset: 0,
@@ -599,6 +606,12 @@ export default function Home() {
   const secondaryButtonText = settings.secondary_button_text || "Open Studio";
   const secondaryButtonLink = settings.secondary_button_link || "/customize";
   const announcementText = settings.announcement_text || "";
+  const menCardTitle = settings.men_card_title || "Men";
+  const menCardImageUrl = settings.men_card_image_url || "";
+  const womenCardTitle = settings.women_card_title || "Women";
+  const womenCardImageUrl = settings.women_card_image_url || "";
+  const studioCardTitle = settings.studio_card_title || "Custom Studio";
+  const studioCardImageUrl = settings.studio_card_image_url || "";
 
   return (
     <>
@@ -681,11 +694,15 @@ export default function Home() {
               tabIndex={0}
               onKeyDown={e => e.key === "Enter" && navigate("/men")}
             >
-              <div style={styles.cardPatternMen} />
+              {menCardImageUrl ? (
+                <img src={menCardImageUrl} alt="" style={styles.cardImage} />
+              ) : (
+                <div style={styles.cardPatternMen} />
+              )}
               <div className="simplicity-card-overlay" style={styles.cardOverlay} />
               <div style={styles.cardContent}>
                 <span style={styles.cardTag}>Category 01</span>
-                <h3 style={styles.cardTitle}>Men</h3>
+                <h3 style={styles.cardTitle}>{menCardTitle}</h3>
                 <div className="simplicity-card-arrow" style={styles.cardArrow}>
                   <span className="simplicity-card-arrow-line" style={styles.cardArrowLine} />
                   Explore
@@ -702,11 +719,15 @@ export default function Home() {
               tabIndex={0}
               onKeyDown={e => e.key === "Enter" && navigate("/women")}
             >
-              <div style={styles.cardPatternWomen} />
+              {womenCardImageUrl ? (
+                <img src={womenCardImageUrl} alt="" style={styles.cardImage} />
+              ) : (
+                <div style={styles.cardPatternWomen} />
+              )}
               <div className="simplicity-card-overlay" style={styles.cardOverlay} />
               <div style={styles.cardContent}>
                 <span style={styles.cardTag}>Category 02</span>
-                <h3 style={styles.cardTitle}>Women</h3>
+                <h3 style={styles.cardTitle}>{womenCardTitle}</h3>
                 <div className="simplicity-card-arrow" style={styles.cardArrow}>
                   <span className="simplicity-card-arrow-line" style={styles.cardArrowLine} />
                   Explore
@@ -723,11 +744,15 @@ export default function Home() {
               tabIndex={0}
               onKeyDown={e => e.key === "Enter" && navigate("/customize")}
             >
-              <div style={styles.cardPatternStudio} />
+              {studioCardImageUrl ? (
+                <img src={studioCardImageUrl} alt="" style={styles.cardImage} />
+              ) : (
+                <div style={styles.cardPatternStudio} />
+              )}
               <div className="simplicity-card-overlay" style={styles.cardOverlay} />
               <div style={styles.cardContent}>
                 <span style={styles.cardTag}>Bespoke 03</span>
-                <h3 style={styles.cardTitle}>Custom<br />Studio</h3>
+                <h3 style={styles.cardTitle}>{studioCardTitle}</h3>
                 <div className="simplicity-card-arrow" style={styles.cardArrow}>
                   <span className="simplicity-card-arrow-line" style={styles.cardArrowLine} />
                   Design Yours
