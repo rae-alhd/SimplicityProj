@@ -32,9 +32,20 @@ function Dashboard({ user, setUser }) {
     secondary_button_text: "",
     secondary_button_link: "",
     announcement_text: "",
+    men_card_image_url: "",
+    men_card_title: "",
+    women_card_image_url: "",
+    women_card_title: "",
+    studio_card_image_url: "",
+    studio_card_title: "",
   });
   const [loadingHomepageSettings, setLoadingHomepageSettings] = useState(true);
   const [heroImageFile, setHeroImageFile] = useState(null);
+  const [cardImageFiles, setCardImageFiles] = useState({
+    men: null,
+    women: null,
+    studio: null,
+  });
 
   const token = localStorage.getItem("token");
 
@@ -293,6 +304,12 @@ function Dashboard({ user, setUser }) {
         secondary_button_text: data.secondary_button_text || "",
         secondary_button_link: data.secondary_button_link || "",
         announcement_text: data.announcement_text || "",
+        men_card_image_url: data.men_card_image_url || "",
+        men_card_title: data.men_card_title || "",
+        women_card_image_url: data.women_card_image_url || "",
+        women_card_title: data.women_card_title || "",
+        studio_card_image_url: data.studio_card_image_url || "",
+        studio_card_title: data.studio_card_title || "",
       });
     } catch (err) {
       console.error("Error fetching homepage settings:", err);
@@ -363,6 +380,45 @@ function Dashboard({ user, setUser }) {
     } catch (err) {
       console.error("Hero image upload error:", err);
       alert("Something went wrong while uploading the hero image.");
+    }
+  };
+
+  const handleCardImageUpload = async (cardKey) => {
+    const file = cardImageFiles[cardKey];
+    if (!file) return;
+
+    try {
+      const formData = new FormData();
+      formData.append("image", file);
+
+      const res = await fetch(
+        `http://localhost:5000/api/admin/homepage-settings/card-image/${cardKey}`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          body: formData,
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.error || "Could not upload category card image.");
+        return;
+      }
+
+      const imageUrlKey = `${cardKey}_card_image_url`;
+      setHomepageSettings({
+        ...homepageSettings,
+        [imageUrlKey]: data[imageUrlKey] || "",
+      });
+      setCardImageFiles({ ...cardImageFiles, [cardKey]: null });
+      alert("Category card image uploaded successfully.");
+    } catch (err) {
+      console.error("Category card image upload error:", err);
+      alert("Something went wrong while uploading the category card image.");
     }
   };
 
@@ -650,6 +706,126 @@ function Dashboard({ user, setUser }) {
                 })
               }
             />
+
+            <p style={{ ...styles.smallEyebrow, gridColumn: "span 3" }}>
+              Men Card
+            </p>
+
+            <input
+              style={{ ...styles.input, gridColumn: "span 3" }}
+              placeholder="Men Card Title"
+              value={homepageSettings.men_card_title}
+              onChange={(e) =>
+                setHomepageSettings({
+                  ...homepageSettings,
+                  men_card_title: e.target.value,
+                })
+              }
+            />
+
+            <div
+              style={{
+                ...styles.uploadRow,
+                gridColumn: "span 3",
+              }}
+            >
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) =>
+                  setCardImageFiles({
+                    ...cardImageFiles,
+                    men: e.target.files[0] || null,
+                  })
+                }
+              />
+              <button
+                onClick={() => handleCardImageUpload("men")}
+                style={styles.editBtn}
+              >
+                Upload Men Card Image
+              </button>
+            </div>
+
+            <p style={{ ...styles.smallEyebrow, gridColumn: "span 3" }}>
+              Women Card
+            </p>
+
+            <input
+              style={{ ...styles.input, gridColumn: "span 3" }}
+              placeholder="Women Card Title"
+              value={homepageSettings.women_card_title}
+              onChange={(e) =>
+                setHomepageSettings({
+                  ...homepageSettings,
+                  women_card_title: e.target.value,
+                })
+              }
+            />
+
+            <div
+              style={{
+                ...styles.uploadRow,
+                gridColumn: "span 3",
+              }}
+            >
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) =>
+                  setCardImageFiles({
+                    ...cardImageFiles,
+                    women: e.target.files[0] || null,
+                  })
+                }
+              />
+              <button
+                onClick={() => handleCardImageUpload("women")}
+                style={styles.editBtn}
+              >
+                Upload Women Card Image
+              </button>
+            </div>
+
+            <p style={{ ...styles.smallEyebrow, gridColumn: "span 3" }}>
+              Custom Studio Card
+            </p>
+
+            <input
+              style={{ ...styles.input, gridColumn: "span 3" }}
+              placeholder="Custom Studio Card Title"
+              value={homepageSettings.studio_card_title}
+              onChange={(e) =>
+                setHomepageSettings({
+                  ...homepageSettings,
+                  studio_card_title: e.target.value,
+                })
+              }
+            />
+
+            <div
+              style={{
+                ...styles.uploadRow,
+                gridColumn: "span 3",
+              }}
+            >
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) =>
+                  setCardImageFiles({
+                    ...cardImageFiles,
+                    studio: e.target.files[0] || null,
+                  })
+                }
+              />
+              <button
+                onClick={() => handleCardImageUpload("studio")}
+                style={styles.editBtn}
+              >
+                Upload Custom Studio Card Image
+              </button>
+            </div>
 
             <button onClick={handleSaveHomepageSettings} style={styles.addBtn}>
               Save Homepage Settings
