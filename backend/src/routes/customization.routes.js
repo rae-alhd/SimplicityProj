@@ -119,12 +119,47 @@ router.get("/products/:productId", async (req, res) => {
       [productId]
     );
 
+    const collectionsResult = await pool.query(
+      `
+      SELECT id, product_id, name, sort_order, is_active
+      FROM design_collections
+      WHERE product_id = $1 AND is_active = true
+      ORDER BY sort_order ASC, id ASC
+      `,
+      [productId]
+    );
+
+    const collectionIds = collectionsResult.rows.map((c) => c.id);
+    const designsResult = await pool.query(
+      `
+      SELECT id, collection_id, name, image_url, sort_order, is_active
+      FROM collection_designs
+      WHERE is_active = true AND collection_id = ANY($1::int[])
+      ORDER BY collection_id ASC, sort_order ASC, id ASC
+      `,
+      [collectionIds]
+    );
+
+    const designsByCollection = {};
+    for (const design of designsResult.rows) {
+      if (!designsByCollection[design.collection_id]) {
+        designsByCollection[design.collection_id] = [];
+      }
+      designsByCollection[design.collection_id].push(design);
+    }
+
+    const collections = collectionsResult.rows.map((collection) => ({
+      ...collection,
+      designs: designsByCollection[collection.id] || [],
+    }));
+
     res.json({
       product: productResult.rows[0],
       colors: colorsResult.rows,
       sizes: sizesResult.rows,
       options: optionsResult.rows,
       examples: examplesResult.rows,
+      collections,
     });
   } catch (err) {
     console.error("Get customization product config error:", err);
