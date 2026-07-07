@@ -18,6 +18,7 @@ import AdminOrders from "./pages/AdminOrders";
 import MyOrders from "./pages/MyOrders";
 import AdminCustomization from "./pages/AdminCustomization";
 import AdminHomepage from "./pages/AdminHomepage";
+import AdminProducts from "./pages/AdminProducts";
 import Register from "./pages/Register";
 
 
@@ -117,6 +118,7 @@ function App() {
 <Route path="/admin/orders" element={<AdminOrders />} />
 <Route path="/admin/customization" element={<AdminCustomization />} />
 <Route path="/admin/homepage" element={<AdminHomepage />} />
+<Route path="/admin/products" element={<AdminProducts />} />
 <Route path="/my-orders" element={<MyOrders />} />
   
         <Route
