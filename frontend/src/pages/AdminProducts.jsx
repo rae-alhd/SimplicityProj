@@ -276,6 +276,38 @@ export default function AdminProducts() {
     }
   };
 
+  const handleDeleteColor = async (color) => {
+    const ok = window.confirm(
+      "Permanently delete this color? This cannot be undone."
+    );
+    if (!ok) return;
+
+    try {
+      const res = await fetch(
+        `http://localhost:5000/api/admin/customization/colors/${color.id}`,
+        {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.error || "Could not delete color.");
+        return;
+      }
+
+      fetchManageColors(editingProduct.id);
+      fetchProductColors(editingProduct.id);
+    } catch (err) {
+      console.error("Delete color error:", err);
+      alert("Something went wrong while deleting the color.");
+    }
+  };
+
   const handleImageUpload = async () => {
     if (!uploadFile || !editingProduct) return;
 
@@ -695,12 +727,20 @@ export default function AdminProducts() {
                             Deactivate
                           </button>
                         ) : (
-                          <button
-                            onClick={() => handleToggleColorActive(color)}
-                            style={styles.imageActionBtn}
-                          >
-                            Reactivate
-                          </button>
+                          <>
+                            <button
+                              onClick={() => handleToggleColorActive(color)}
+                              style={styles.imageActionBtn}
+                            >
+                              Reactivate
+                            </button>
+                            <button
+                              onClick={() => handleDeleteColor(color)}
+                              style={styles.imageDeleteBtn}
+                            >
+                              Delete
+                            </button>
+                          </>
                         )}
                       </div>
                     )
