@@ -102,6 +102,46 @@ router.post(
         return res.status(400).json({ error: "image file is required" });
       }
 
+      const rawColorId = req.body.color_id;
+      let colorId = null;
+
+      if (rawColorId !== null && rawColorId !== undefined && rawColorId !== "") {
+        const parsedColorId = Number(rawColorId);
+
+        if (!Number.isFinite(parsedColorId)) {
+          fs.unlink(req.file.path, () => {});
+          return res.status(400).json({ error: "Invalid color_id" });
+        }
+
+        colorId = parsedColorId;
+      }
+
+      if (colorId) {
+        const colorCheck = await pool.query(
+          "SELECT id, product_id, is_active FROM customizable_product_colors WHERE id = $1",
+          [colorId]
+        );
+
+        if (colorCheck.rows.length === 0) {
+          fs.unlink(req.file.path, () => {});
+          return res.status(400).json({ error: "Invalid color_id" });
+        }
+
+        const color = colorCheck.rows[0];
+
+        if (Number(color.product_id) !== Number(productId)) {
+          fs.unlink(req.file.path, () => {});
+          return res
+            .status(400)
+            .json({ error: "Selected color does not belong to this product" });
+        }
+
+        if (!color.is_active) {
+          fs.unlink(req.file.path, () => {});
+          return res.status(400).json({ error: "Selected color is not active" });
+        }
+      }
+
       const activeCountResult = await pool.query(
         "SELECT COUNT(*) FROM product_images WHERE product_id = $1 AND is_active = true",
         [productId]
@@ -119,11 +159,11 @@ router.post(
 
       const insertResult = await pool.query(
         `
-        INSERT INTO product_images (product_id, image_url, sort_order, is_main, is_active)
-        VALUES ($1, $2, $3, $4, true)
+        INSERT INTO product_images (product_id, image_url, sort_order, is_main, is_active, color_id)
+        VALUES ($1, $2, $3, $4, true, $5)
         RETURNING *
         `,
-        [productId, imageUrl, nextSortOrder, isFirstActiveImage]
+        [productId, imageUrl, nextSortOrder, isFirstActiveImage, colorId]
       );
 
       res.status(201).json(insertResult.rows[0]);
