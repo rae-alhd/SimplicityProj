@@ -1,7 +1,44 @@
 const express = require("express");
+const path = require("path");
+const fs = require("fs");
+const crypto = require("crypto");
+const multer = require("multer");
 const router = express.Router();
 const pool = require("../config/db");
 const { authMiddleware, adminOnly } = require("../middleware/auth.middleware");
+
+const UPLOAD_DIR = path.join(__dirname, "..", "..", "uploads", "homepage");
+
+const MIME_EXTENSIONS = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+};
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+    cb(null, UPLOAD_DIR);
+  },
+  filename: (req, file, cb) => {
+    const ext = MIME_EXTENSIONS[file.mimetype] || "";
+    const uniqueName = `hero-${Date.now()}-${crypto
+      .randomBytes(6)
+      .toString("hex")}${ext}`;
+    cb(null, uniqueName);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!MIME_EXTENSIONS[file.mimetype]) {
+      return cb(new Error("Only JPEG, PNG, and WEBP images are allowed"));
+    }
+    cb(null, true);
+  },
+});
 
 // PUT /api/admin/homepage-settings
 router.put("/", authMiddleware, adminOnly, async (req, res) => {
@@ -62,5 +99,52 @@ router.put("/", authMiddleware, adminOnly, async (req, res) => {
     res.status(500).json({ error: "Failed to update homepage settings" });
   }
 });
+
+// POST /api/admin/homepage-settings/hero-image
+router.post(
+  "/hero-image",
+  authMiddleware,
+  adminOnly,
+  (req, res, next) => {
+    upload.single("image")(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ error: err.message });
+      }
+      next();
+    });
+  },
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "image file is required" });
+      }
+
+      const baseUrl = process.env.BACKEND_PUBLIC_URL || "http://localhost:5000";
+      const imageUrl = `${baseUrl}/uploads/homepage/${req.file.filename}`;
+
+      const result = await pool.query(
+        `
+        UPDATE homepage_settings
+        SET hero_image_url = $1, updated_at = now()
+        WHERE id = 1
+        RETURNING *
+        `,
+        [imageUrl]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: "Homepage settings row not found" });
+      }
+
+      res.status(200).json(result.rows[0]);
+    } catch (err) {
+      if (req.file) {
+        fs.unlink(req.file.path, () => {});
+      }
+      console.error("Error uploading hero image:", err.message);
+      res.status(500).json({ error: "Failed to upload hero image" });
+    }
+  }
+);
 
 module.exports = router;

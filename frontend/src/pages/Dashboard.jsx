@@ -34,6 +34,7 @@ function Dashboard({ user, setUser }) {
     announcement_text: "",
   });
   const [loadingHomepageSettings, setLoadingHomepageSettings] = useState(true);
+  const [heroImageFile, setHeroImageFile] = useState(null);
 
   const token = localStorage.getItem("token");
 
@@ -328,6 +329,43 @@ function Dashboard({ user, setUser }) {
     }
   };
 
+  const handleHeroImageUpload = async () => {
+    if (!heroImageFile) return;
+
+    try {
+      const formData = new FormData();
+      formData.append("image", heroImageFile);
+
+      const res = await fetch(
+        "http://localhost:5000/api/admin/homepage-settings/hero-image",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          body: formData,
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.error || "Could not upload hero image.");
+        return;
+      }
+
+      setHomepageSettings({
+        ...homepageSettings,
+        hero_image_url: data.hero_image_url || "",
+      });
+      setHeroImageFile(null);
+      alert("Hero image uploaded successfully.");
+    } catch (err) {
+      console.error("Hero image upload error:", err);
+      alert("Something went wrong while uploading the hero image.");
+    }
+  };
+
   useEffect(() => {
     fetchProducts();
     fetchOrders();
@@ -522,6 +560,24 @@ function Dashboard({ user, setUser }) {
                 })
               }
             />
+
+            <div
+              style={{
+                ...styles.uploadRow,
+                gridColumn: "span 3",
+              }}
+            >
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) =>
+                  setHeroImageFile(e.target.files[0] || null)
+                }
+              />
+              <button onClick={handleHeroImageUpload} style={styles.editBtn}>
+                Upload Hero Image
+              </button>
+            </div>
 
             <input
               style={{ ...styles.input, gridColumn: "span 3" }}
