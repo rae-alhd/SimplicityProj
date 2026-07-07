@@ -61,6 +61,8 @@ const cartResult = await client.query(
     co.extra_price AS customization_option_extra_price,
 
     cd.name AS design_label,
+    cd.image_url AS design_image_url,
+    dc.name AS collection_name,
 
     (
       p.base_price
@@ -75,6 +77,7 @@ const cartResult = await client.query(
   JOIN products p ON p.id = ci.product_id
   LEFT JOIN customization_options co ON ci.customization_option_id = co.id
   LEFT JOIN collection_designs cd ON ci.design_id = cd.id
+  LEFT JOIN design_collections dc ON cd.collection_id = dc.id
   WHERE ci.user_id = $1
   `,
   [userId]
@@ -121,9 +124,11 @@ for (const item of cartItems) {
       chosen_size,
       custom_text,
       custom_note,
-      design_label
+      design_label,
+      collection_name,
+      design_image_url
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
     `,
     [
       order.id,
@@ -141,6 +146,8 @@ for (const item of cartItems) {
       item.custom_text || null,
       item.custom_note || null,
       item.design_label || null,
+      item.collection_name || null,
+      item.design_image_url || null,
     ]
   );
 }
