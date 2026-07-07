@@ -8,6 +8,7 @@ function groupImagesByProduct(imageRows) {
       image_url: row.image_url,
       sort_order: row.sort_order,
       is_main: row.is_main,
+      color_id: row.color_id,
     });
     map.set(row.product_id, list);
   }

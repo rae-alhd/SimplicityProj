@@ -14,7 +14,7 @@ router.get("/", async (req, res) => {
     const productIds = products.map((product) => product.id);
     const imagesResult = await pool.query(
       `
-      SELECT id, product_id, image_url, sort_order, is_main
+      SELECT id, product_id, image_url, sort_order, is_main, color_id
       FROM product_images
       WHERE is_active = true AND product_id = ANY($1::int[])
       ORDER BY product_id ASC, sort_order ASC, id ASC
@@ -44,7 +44,7 @@ router.get("/:id", async (req, res) => {
 
       const imagesResult = await pool.query(
         `
-        SELECT id, product_id, image_url, sort_order, is_main
+        SELECT id, product_id, image_url, sort_order, is_main, color_id
         FROM product_images
         WHERE product_id = $1 AND is_active = true
         ORDER BY sort_order ASC, id ASC
