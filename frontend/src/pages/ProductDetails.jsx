@@ -180,6 +180,13 @@ const s = {
     marginBottom: "12px",
     display: "block",
   },
+  customizationLabel: {
+    fontSize: "12px",
+    letterSpacing: "0.08em",
+    fontFamily: FONT,
+    marginBottom: "28px",
+    display: "block",
+  },
   sizeRow: {
     display: "flex",
     flexWrap: "wrap",
@@ -599,6 +606,17 @@ export default function ProductDetails({ fetchCart }) {
               +
             </button>
           </div>
+
+          <span
+            style={{
+              ...s.customizationLabel,
+              color: product.is_customizable ? "#1a1a1a" : "#999",
+            }}
+          >
+            {product.is_customizable
+              ? "Customization available"
+              : "Ready-to-wear only"}
+          </span>
 
           {/* Actions */}
           <div style={s.actionStack}>

@@ -70,6 +70,14 @@ const priceStyle = {
   marginTop: "2px",
 };
 
+const customizationLabelStyle = {
+  fontSize: "10px",
+  letterSpacing: "0.14em",
+  textTransform: "uppercase",
+  fontFamily: "'Cormorant Garamond', Georgia, serif",
+  marginTop: "2px",
+};
+
 const btnStyle = {
   marginTop: "12px",
   padding: "10px 0",
@@ -140,6 +148,16 @@ export default function ProductCard({ product }) {
           {product.base_price !== undefined && product.base_price !== null
             ? `$${Number(product.base_price).toFixed(2)}`
             : "—"}
+        </span>
+        <span
+          style={{
+            ...customizationLabelStyle,
+            color: product.is_customizable ? "#1a1a1a" : "#999",
+          }}
+        >
+          {product.is_customizable
+            ? "Customization available"
+            : "Ready-to-wear only"}
         </span>
         <button
           style={btnStyle}

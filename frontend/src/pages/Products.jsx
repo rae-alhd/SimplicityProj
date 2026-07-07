@@ -199,6 +199,14 @@ const styles = {
     marginBottom: "18px",
     letterSpacing: "0.5px",
   },
+  cardCustomizationLabel: {
+    fontSize: "10px",
+    fontFamily: "'Helvetica Neue', Helvetica, sans-serif",
+    fontWeight: 400,
+    letterSpacing: "1px",
+    textTransform: "uppercase",
+    marginBottom: "14px",
+  },
 
   btnBase: {
     display: "block",
@@ -353,6 +361,14 @@ function ProductCard({ product, navigate }) {
 
         <h3 style={styles.cardName}>{product.name}</h3>
         <p style={styles.cardPrice}>{formatPrice(product.base_price)}</p>
+        <p
+          style={{
+            ...styles.cardCustomizationLabel,
+            color: isCustomizable ? GOLD : MID_GRAY,
+          }}
+        >
+          {isCustomizable ? "Customization available" : "Ready-to-wear only"}
+        </p>
 
         {isCustomizable ? (
           <button
