@@ -14,6 +14,8 @@ function CustomizePage() {
   const [selectedColor, setSelectedColor] = useState(null);
   const [selectedSize, setSelectedSize] = useState(null);
   const [selectedOption, setSelectedOption] = useState(null);
+  const [selectedCollectionId, setSelectedCollectionId] = useState(null);
+  const [selectedDesign, setSelectedDesign] = useState(null);
   const [customText, setCustomText] = useState("");
   const [customNote, setCustomNote] = useState("");
   const [quantity, setQuantity] = useState(1);
@@ -22,6 +24,9 @@ function CustomizePage() {
   const [loadingConfig, setLoadingConfig] = useState(false);
   const [error, setError] = useState("");
   const [adding, setAdding] = useState(false);
+
+  const [isProductPickerOpen, setIsProductPickerOpen] = useState(false);
+  const [isDesignPickerOpen, setIsDesignPickerOpen] = useState(false);
 
   useEffect(() => {
     fetch(`${API_BASE}/customization/products`)
@@ -66,6 +71,15 @@ function CustomizePage() {
         setCustomNote("");
         setQuantity(1);
 
+        const firstCollectionWithDesigns = (data.collections || []).find(
+          (c) => c.designs && c.designs.length > 0
+        );
+        setSelectedCollectionId(
+          firstCollectionWithDesigns ? firstCollectionWithDesigns.id : null
+        );
+        setSelectedDesign(null);
+        setIsDesignPickerOpen(false);
+
         setLoadingConfig(false);
       })
       .catch((err) => {
@@ -74,7 +88,22 @@ function CustomizePage() {
       });
   }, [selectedProductId]);
 
+  function selectCollection(collectionId) {
+    setSelectedCollectionId(collectionId);
+    setSelectedDesign((current) =>
+      current && current.collection_id === collectionId ? current : null
+    );
+  }
+
   const product = config?.product;
+
+  const collectionsWithDesigns = (config?.collections || []).filter(
+    (c) => c.designs && c.designs.length > 0
+  );
+  const showDesignSection = collectionsWithDesigns.length > 0;
+  const activeCollection = (config?.collections || []).find(
+    (c) => c.id === selectedCollectionId
+  );
 
   const totalPrice = useMemo(() => {
     if (!product) return 0;
@@ -236,50 +265,89 @@ function CustomizePage() {
             <>
               <div style={styles.controlBlock}>
                 <label style={styles.label}>Choose Product</label>
-                <div style={styles.productCardGrid}>
-                  {products.map((p) => {
-                    const displayImageUrl = p.main_image_url || p.image_url;
-                    const isSelected = selectedProductId === p.id;
 
-                    return (
-                      <button
-                        key={p.id}
-                        onClick={() => setSelectedProductId(p.id)}
-                        style={{
-                          ...styles.productCard,
-                          border: isSelected
-                            ? "2px solid #111"
-                            : "1px solid #e5e0d8",
-                        }}
-                      >
-                        <div style={styles.productCardImageWrap}>
-                          {displayImageUrl ? (
-                            <img
-                              src={displayImageUrl}
-                              alt={p.name}
-                              style={styles.productCardImage}
-                            />
-                          ) : (
-                            <span style={styles.productCardNoImage}>
-                              No Image
+                {isProductPickerOpen ? (
+                  <div style={styles.productCardGrid}>
+                    {products.map((p) => {
+                      const displayImageUrl = p.main_image_url || p.image_url;
+                      const isSelected = selectedProductId === p.id;
+
+                      return (
+                        <button
+                          key={p.id}
+                          onClick={() => {
+                            setSelectedProductId(p.id);
+                            setIsProductPickerOpen(false);
+                          }}
+                          style={{
+                            ...styles.productCard,
+                            border: isSelected
+                              ? "2px solid #111"
+                              : "1px solid #e5e0d8",
+                          }}
+                        >
+                          <div style={styles.productCardImageWrap}>
+                            {displayImageUrl ? (
+                              <img
+                                src={displayImageUrl}
+                                alt={p.name}
+                                style={styles.productCardImage}
+                              />
+                            ) : (
+                              <span style={styles.productCardNoImage}>
+                                No Image
+                              </span>
+                            )}
+                          </div>
+                          <span style={styles.productCardName}>{p.name}</span>
+                          {p.base_price !== undefined && p.base_price !== null && (
+                            <span style={styles.productCardPrice}>
+                              ${Number(p.base_price).toFixed(2)}
                             </span>
                           )}
-                        </div>
-                        <span style={styles.productCardName}>{p.name}</span>
-                        {p.base_price !== undefined && p.base_price !== null && (
-                          <span style={styles.productCardPrice}>
-                            ${Number(p.base_price).toFixed(2)}
+                          {p.category && (
+                            <span style={styles.productCardCategory}>
+                              {p.category}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div style={styles.compactSummary}>
+                    <div style={styles.compactSummaryLeft}>
+                      <div style={styles.compactSummaryImageWrap}>
+                        {product && (product.main_image_url || product.image_url) ? (
+                          <img
+                            src={product.main_image_url || product.image_url}
+                            alt={product.name}
+                            style={styles.compactSummaryImage}
+                          />
+                        ) : (
+                          <span style={styles.productCardNoImage}>
+                            No Image
                           </span>
                         )}
-                        {p.category && (
-                          <span style={styles.productCardCategory}>
-                            {p.category}
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
+                      </div>
+                      <div>
+                        <strong>{product?.name}</strong>
+                        {product?.base_price !== undefined &&
+                          product?.base_price !== null && (
+                            <p style={styles.compactSummaryPrice}>
+                              ${Number(product.base_price).toFixed(2)}
+                            </p>
+                          )}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setIsProductPickerOpen(true)}
+                      style={styles.changeBtn}
+                    >
+                      Change Product
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div style={styles.productSummary}>
@@ -332,6 +400,102 @@ function CustomizePage() {
                   ))}
                 </div>
               </div>
+
+              {showDesignSection && (
+                <div style={styles.controlBlock}>
+                  <label style={styles.label}>Choose Your Design</label>
+
+                  {isDesignPickerOpen ? (
+                    <>
+                      <div style={styles.collectionTabs}>
+                        {config.collections.map((collection) => (
+                          <button
+                            key={collection.id}
+                            onClick={() => selectCollection(collection.id)}
+                            style={{
+                              ...styles.collectionTab,
+                              background:
+                                selectedCollectionId === collection.id
+                                  ? "#111"
+                                  : "#fff",
+                              color:
+                                selectedCollectionId === collection.id
+                                  ? "#fff"
+                                  : "#111",
+                            }}
+                          >
+                            {collection.name}
+                          </button>
+                        ))}
+                      </div>
+
+                      {activeCollection &&
+                        (activeCollection.designs.length === 0 ? (
+                          <p style={styles.muted}>
+                            No designs available in this collection yet.
+                          </p>
+                        ) : (
+                          <div style={styles.designCardGrid}>
+                            {activeCollection.designs.map((design) => (
+                              <button
+                                key={design.id}
+                                onClick={() => {
+                                  setSelectedDesign(design);
+                                  setIsDesignPickerOpen(false);
+                                }}
+                                style={{
+                                  ...styles.designCard,
+                                  border:
+                                    selectedDesign?.id === design.id
+                                      ? "2px solid #111"
+                                      : "1px solid #e5e0d8",
+                                }}
+                              >
+                                <div style={styles.designCardImageWrap}>
+                                  <img
+                                    src={design.image_url}
+                                    alt={design.name}
+                                    style={styles.designCardImage}
+                                  />
+                                </div>
+                                <span style={styles.designCardName}>
+                                  {design.name}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        ))}
+                    </>
+                  ) : (
+                    <div style={styles.compactSummary}>
+                      <div style={styles.compactSummaryLeft}>
+                        {selectedDesign ? (
+                          <>
+                            <div style={styles.compactSummaryImageWrap}>
+                              <img
+                                src={selectedDesign.image_url}
+                                alt={selectedDesign.name}
+                                style={styles.compactSummaryImage}
+                              />
+                            </div>
+                            <strong>{selectedDesign.name}</strong>
+                          </>
+                        ) : (
+                          <span style={styles.muted}>
+                            No design selected yet
+                          </span>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => setIsDesignPickerOpen(true)}
+                        style={styles.changeBtn}
+                      >
+                        {selectedDesign ? "Change Design" : "Choose Design"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div style={styles.controlBlock}>
                 <label style={styles.label}>Design Placement</label>
@@ -633,6 +797,96 @@ const styles = {
     letterSpacing: "0.1em",
     textTransform: "uppercase",
     color: "#9b8c73",
+  },
+  collectionTabs: {
+    display: "flex",
+    gap: "10px",
+    flexWrap: "wrap",
+    marginBottom: "14px",
+  },
+  collectionTab: {
+    padding: "10px 16px",
+    border: "1px solid #ddd",
+    cursor: "pointer",
+    fontFamily: "Georgia, serif",
+    fontSize: "13px",
+  },
+  designCardGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))",
+    gap: "10px",
+  },
+  designCard: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: "4px",
+    padding: "8px",
+    background: "#fff",
+    cursor: "pointer",
+    fontFamily: "Georgia, serif",
+    textAlign: "left",
+    transition: "border-color 0.15s ease",
+  },
+  designCardImageWrap: {
+    width: "100%",
+    aspectRatio: "1 / 1",
+    background: "#f2f0eb",
+    overflow: "hidden",
+  },
+  designCardImage: {
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+  },
+  designCardName: {
+    fontSize: "12px",
+    color: "#111",
+  },
+  compactSummary: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "12px",
+    border: "1px solid #e5e0d8",
+    padding: "12px 14px",
+  },
+  compactSummaryLeft: {
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
+  },
+  compactSummaryImageWrap: {
+    width: "48px",
+    height: "48px",
+    flexShrink: 0,
+    background: "#f2f0eb",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  compactSummaryImage: {
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+  },
+  compactSummaryPrice: {
+    fontSize: "12px",
+    color: "#555",
+    margin: "2px 0 0",
+  },
+  changeBtn: {
+    padding: "10px 16px",
+    background: "#fff",
+    color: "#111",
+    border: "1px solid #111",
+    cursor: "pointer",
+    fontFamily: "Georgia, serif",
+    fontSize: "12px",
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    whiteSpace: "nowrap",
   },
   productSummary: {
     borderTop: "1px solid #eee",
