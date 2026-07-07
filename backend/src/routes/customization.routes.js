@@ -1,14 +1,15 @@
 const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
+const { attachImageData } = require("../utils/productImages");
 
 // GET /api/customization/products
 // Get all products that are customizable
 router.get("/products", async (req, res) => {
   try {
-    const result = await pool.query(
+    const productsResult = await pool.query(
       `
-      SELECT 
+      SELECT
         id,
         name,
         description,
@@ -25,8 +26,20 @@ router.get("/products", async (req, res) => {
       ORDER BY id ASC
       `
     );
+    const products = productsResult.rows;
 
-    res.json(result.rows);
+    const productIds = products.map((product) => product.id);
+    const imagesResult = await pool.query(
+      `
+      SELECT id, product_id, image_url, sort_order, is_main
+      FROM product_images
+      WHERE is_active = true AND product_id = ANY($1::int[])
+      ORDER BY product_id ASC, sort_order ASC, id ASC
+      `,
+      [productIds]
+    );
+
+    res.json(attachImageData(products, imagesResult.rows));
   } catch (err) {
     console.error("Get customizable products error:", err);
     res.status(500).json({ error: "Server error" });

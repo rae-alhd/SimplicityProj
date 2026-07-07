@@ -236,17 +236,50 @@ function CustomizePage() {
             <>
               <div style={styles.controlBlock}>
                 <label style={styles.label}>Choose Product</label>
-                <select
-                  value={selectedProductId || ""}
-                  onChange={(e) => setSelectedProductId(Number(e.target.value))}
-                  style={styles.select}
-                >
-                  {products.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
+                <div style={styles.productCardGrid}>
+                  {products.map((p) => {
+                    const displayImageUrl = p.main_image_url || p.image_url;
+                    const isSelected = selectedProductId === p.id;
+
+                    return (
+                      <button
+                        key={p.id}
+                        onClick={() => setSelectedProductId(p.id)}
+                        style={{
+                          ...styles.productCard,
+                          border: isSelected
+                            ? "2px solid #111"
+                            : "1px solid #e5e0d8",
+                        }}
+                      >
+                        <div style={styles.productCardImageWrap}>
+                          {displayImageUrl ? (
+                            <img
+                              src={displayImageUrl}
+                              alt={p.name}
+                              style={styles.productCardImage}
+                            />
+                          ) : (
+                            <span style={styles.productCardNoImage}>
+                              No Image
+                            </span>
+                          )}
+                        </div>
+                        <span style={styles.productCardName}>{p.name}</span>
+                        {p.base_price !== undefined && p.base_price !== null && (
+                          <span style={styles.productCardPrice}>
+                            ${Number(p.base_price).toFixed(2)}
+                          </span>
+                        )}
+                        {p.category && (
+                          <span style={styles.productCardCategory}>
+                            {p.category}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               <div style={styles.productSummary}>
@@ -548,6 +581,58 @@ const styles = {
     border: "1px solid #ddd",
     background: "#fff",
     fontFamily: "Georgia, serif",
+  },
+  productCardGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))",
+    gap: "12px",
+  },
+  productCard: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: "4px",
+    padding: "10px",
+    background: "#fff",
+    cursor: "pointer",
+    fontFamily: "Georgia, serif",
+    textAlign: "left",
+    transition: "border-color 0.15s ease",
+  },
+  productCardImageWrap: {
+    width: "100%",
+    aspectRatio: "1 / 1",
+    background: "#f2f0eb",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+    marginBottom: "6px",
+  },
+  productCardImage: {
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+  },
+  productCardNoImage: {
+    fontSize: "10px",
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    color: "#999",
+  },
+  productCardName: {
+    fontSize: "13px",
+    color: "#111",
+  },
+  productCardPrice: {
+    fontSize: "12px",
+    color: "#555",
+  },
+  productCardCategory: {
+    fontSize: "10px",
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    color: "#9b8c73",
   },
   productSummary: {
     borderTop: "1px solid #eee",
