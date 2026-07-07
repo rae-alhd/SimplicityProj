@@ -5,24 +5,9 @@ function Dashboard({ user, setUser }) {
   const navigate = useNavigate();
 
   const [products, setProducts] = useState([]);
-  const [editingProduct, setEditingProduct] = useState(null);
   const [orders, setOrders] = useState([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
   const [loadingOrders, setLoadingOrders] = useState(true);
-
-  const [newProduct, setNewProduct] = useState({
-    name: "",
-    category: "",
-    target_group: "",
-    base_price: "",
-    image_url: "",
-  });
-
-  const [productImages, setProductImages] = useState([]);
-  const [loadingImages, setLoadingImages] = useState(false);
-  const [uploadFile, setUploadFile] = useState(null);
-  const [productColors, setProductColors] = useState([]);
-  const [uploadColorId, setUploadColorId] = useState("");
 
   const token = localStorage.getItem("token");
 
@@ -65,239 +50,16 @@ function Dashboard({ user, setUser }) {
     }
   };
 
-  const handleDelete = async (id) => {
-    const ok = confirm("Delete this product?");
-    if (!ok) return;
-
-    try {
-      const res = await fetch(`http://localhost:5000/api/products/${id}`, {
-        method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
-
-      const data = await res.json();
-      console.log("Deleted:", data);
-
-      fetchProducts();
-    } catch (err) {
-      console.error("Delete error:", err);
-    }
-  };
-
-  const handleUpdate = async () => {
-    try {
-      const res = await fetch(
-        `http://localhost:5000/api/products/${editingProduct.id}`,
-        {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            ...editingProduct,
-            base_price: Number(editingProduct.base_price),
-          }),
-        }
-      );
-
-      const data = await res.json();
-      console.log("Updated:", data);
-
-      setEditingProduct(null);
-      fetchProducts();
-    } catch (err) {
-      console.error("Update error:", err);
-    }
-  };
-
-  const handleCreate = async () => {
-    try {
-      if (!newProduct.name || !newProduct.category || !newProduct.target_group || !newProduct.base_price) {
-        alert("Please fill name, category, target group, and price.");
-        return;
-      }
-
-      const res = await fetch("http://localhost:5000/api/products", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          ...newProduct,
-          base_price: Number(newProduct.base_price),
-        }),
-      });
-
-      const data = await res.json();
-      console.log("Created:", data);
-
-      fetchProducts();
-
-      setNewProduct({
-        name: "",
-        category: "",
-        target_group: "",
-        base_price: "",
-        image_url: "",
-      });
-    } catch (err) {
-      console.error("Create error:", err);
-    }
-  };
-
   const handleLogout = () => {
     localStorage.removeItem("token");
     setUser(null);
     navigate("/login");
   };
 
-  const fetchProductImages = async (productId) => {
-    try {
-      setLoadingImages(true);
-      const res = await fetch(
-        `http://localhost:5000/api/admin/products/${productId}/images`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      );
-      const data = await res.json();
-      setProductImages(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.error("Error fetching product images:", err);
-    } finally {
-      setLoadingImages(false);
-    }
-  };
-
-  const fetchProductColors = async (productId) => {
-    try {
-      const res = await fetch(
-        `http://localhost:5000/api/products/${productId}/colors`
-      );
-      const data = await res.json();
-      setProductColors(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.error("Error fetching product colors:", err);
-    }
-  };
-
-  const handleImageUpload = async () => {
-    if (!uploadFile || !editingProduct) return;
-
-    try {
-      const formData = new FormData();
-      formData.append("image", uploadFile);
-      if (uploadColorId) {
-        formData.append("color_id", uploadColorId);
-      }
-
-      const res = await fetch(
-        `http://localhost:5000/api/admin/products/${editingProduct.id}/images`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-          body: formData,
-        }
-      );
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        alert(data.error || "Could not upload image.");
-        return;
-      }
-
-      setUploadFile(null);
-      setUploadColorId("");
-      fetchProductImages(editingProduct.id);
-      fetchProducts();
-    } catch (err) {
-      console.error("Image upload error:", err);
-      alert("Something went wrong while uploading the image.");
-    }
-  };
-
-  const handleSetMainImage = async (imageId) => {
-    try {
-      const res = await fetch(
-        `http://localhost:5000/api/admin/products/${editingProduct.id}/images/${imageId}/main`,
-        {
-          method: "PATCH",
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      );
-
-      if (!res.ok) {
-        const data = await res.json();
-        alert(data.error || "Could not set main image.");
-        return;
-      }
-
-      fetchProductImages(editingProduct.id);
-      fetchProducts();
-    } catch (err) {
-      console.error("Set main image error:", err);
-      alert("Something went wrong while setting the main image.");
-    }
-  };
-
-  const handleDeactivateImage = async (imageId) => {
-    const ok = window.confirm(
-      "Deactivate this image? It will no longer appear on public product pages. If it is the main image, another active image will be selected as main."
-    );
-    if (!ok) return;
-
-    try {
-      const res = await fetch(
-        `http://localhost:5000/api/admin/products/${editingProduct.id}/images/${imageId}/deactivate`,
-        {
-          method: "PATCH",
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      );
-
-      if (!res.ok) {
-        const data = await res.json();
-        alert(data.error || "Could not deactivate image.");
-        return;
-      }
-
-      fetchProductImages(editingProduct.id);
-      fetchProducts();
-    } catch (err) {
-      console.error("Deactivate image error:", err);
-      alert("Something went wrong while deactivating the image.");
-    }
-  };
-
   useEffect(() => {
     fetchProducts();
     fetchOrders();
   }, []);
-
-  useEffect(() => {
-    if (editingProduct?.id) {
-      fetchProductImages(editingProduct.id);
-      fetchProductColors(editingProduct.id);
-    } else {
-      setProductImages([]);
-      setProductColors([]);
-    }
-    setUploadFile(null);
-    setUploadColorId("");
-  }, [editingProduct?.id]);
 
   const stats = useMemo(() => {
     const activeProducts = products.filter((p) => p.is_active !== false).length;
@@ -418,6 +180,9 @@ function Dashboard({ user, setUser }) {
           <button onClick={() => navigate("/admin/homepage")} style={styles.actionBtn}>
             Manage Homepage
           </button>
+          <button onClick={() => navigate("/admin/products")} style={styles.actionBtn}>
+            Manage Products
+          </button>
           <button onClick={() => navigate("/products")} style={styles.actionBtnLight}>
             View Storefront
           </button>
@@ -484,67 +249,6 @@ function Dashboard({ user, setUser }) {
           </p>
         </section>
 
-        <section style={styles.formPanel}>
-          <div style={styles.sectionHeader}>
-            <div>
-              <p style={styles.smallEyebrow}>Product Management</p>
-              <h2 style={styles.sectionTitle}>Add Product</h2>
-            </div>
-          </div>
-
-          <div style={styles.formGrid}>
-            <input
-              style={styles.input}
-              placeholder="Name"
-              value={newProduct.name}
-              onChange={(e) =>
-                setNewProduct({ ...newProduct, name: e.target.value })
-              }
-            />
-
-            <input
-              style={styles.input}
-              placeholder="Category (HOODIE / TSHIRT)"
-              value={newProduct.category}
-              onChange={(e) =>
-                setNewProduct({ ...newProduct, category: e.target.value })
-              }
-            />
-
-            <input
-              style={styles.input}
-              placeholder="Target (MEN / WOMEN / UNISEX)"
-              value={newProduct.target_group}
-              onChange={(e) =>
-                setNewProduct({ ...newProduct, target_group: e.target.value })
-              }
-            />
-
-            <input
-              style={styles.input}
-              placeholder="Price"
-              type="number"
-              value={newProduct.base_price}
-              onChange={(e) =>
-                setNewProduct({ ...newProduct, base_price: e.target.value })
-              }
-            />
-
-            <input
-              style={{ ...styles.input, gridColumn: "span 2" }}
-              placeholder="Image URL"
-              value={newProduct.image_url}
-              onChange={(e) =>
-                setNewProduct({ ...newProduct, image_url: e.target.value })
-              }
-            />
-
-            <button onClick={handleCreate} style={styles.addBtn}>
-              Add Product
-            </button>
-          </div>
-        </section>
-
         <section style={styles.bottomGrid}>
           <div style={styles.panel}>
             <div style={styles.sectionHeader}>
@@ -552,59 +256,49 @@ function Dashboard({ user, setUser }) {
                 <p style={styles.smallEyebrow}>Catalog</p>
                 <h2 style={styles.sectionTitle}>Products</h2>
               </div>
-              <span style={styles.muted}>
-                {loadingProducts ? "Loading..." : `${products.length} products`}
-              </span>
+              <button onClick={() => navigate("/admin/products")} style={styles.textBtn}>
+                Manage Products
+              </button>
             </div>
 
-            <div style={styles.productList}>
-              {recentProducts.map((product) => (
-                <div key={product.id} style={styles.productItem}>
-                  <div style={styles.productLeft}>
-                    <div style={styles.productThumb}>
-                      {product.main_image_url || product.image_url ? (
-                        <img
-                          src={product.main_image_url || product.image_url}
-                          alt={product.name}
-                          style={styles.productImg}
-                        />
-                      ) : (
-                        <span>No image</span>
-                      )}
+            {loadingProducts ? (
+              <p style={styles.muted}>Loading products...</p>
+            ) : recentProducts.length === 0 ? (
+              <p style={styles.muted}>No products yet.</p>
+            ) : (
+              <div style={styles.productList}>
+                {recentProducts.map((product) => (
+                  <div key={product.id} style={styles.productItem}>
+                    <div style={styles.productLeft}>
+                      <div style={styles.productThumb}>
+                        {product.main_image_url || product.image_url ? (
+                          <img
+                            src={product.main_image_url || product.image_url}
+                            alt={product.name}
+                            style={styles.productImg}
+                          />
+                        ) : (
+                          <span>No image</span>
+                        )}
+                      </div>
+
+                      <div>
+                        <strong>{product.name}</strong>
+                        <p style={styles.productMeta}>
+                          #{product.id} · {product.category || "No category"} ·{" "}
+                          {product.target_group || "No target"}
+                        </p>
+                        {product.is_customizable && (
+                          <span style={styles.customBadge}>Customizable</span>
+                        )}
+                      </div>
                     </div>
 
-                    <div>
-                      <strong>{product.name}</strong>
-                      <p style={styles.productMeta}>
-                        #{product.id} · {product.category || "No category"} ·{" "}
-                        {product.target_group || "No target"}
-                      </p>
-                      {product.is_customizable && (
-                        <span style={styles.customBadge}>Customizable</span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div style={styles.productActions}>
                     <strong>${Number(product.base_price || 0).toFixed(2)}</strong>
-                    <div>
-                      <button
-                        onClick={() => setEditingProduct(product)}
-                        style={styles.editBtn}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => handleDelete(product.id)}
-                        style={styles.deleteBtn}
-                      >
-                        Delete
-                      </button>
-                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div style={styles.panel}>
@@ -645,148 +339,6 @@ function Dashboard({ user, setUser }) {
           </div>
         </section>
 
-        {editingProduct && (
-          <section style={styles.editPanel}>
-            <div style={styles.sectionHeader}>
-              <div>
-                <p style={styles.smallEyebrow}>Editing</p>
-                <h2 style={styles.sectionTitle}>{editingProduct.name}</h2>
-              </div>
-              <button onClick={() => setEditingProduct(null)} style={styles.textBtn}>
-                Cancel
-              </button>
-            </div>
-
-            <div style={styles.formGrid}>
-              <input
-                style={styles.input}
-                value={editingProduct.name}
-                onChange={(e) =>
-                  setEditingProduct({ ...editingProduct, name: e.target.value })
-                }
-              />
-
-              <input
-                style={styles.input}
-                value={editingProduct.category || ""}
-                onChange={(e) =>
-                  setEditingProduct({ ...editingProduct, category: e.target.value })
-                }
-              />
-
-              <input
-                style={styles.input}
-                value={editingProduct.target_group || ""}
-                onChange={(e) =>
-                  setEditingProduct({
-                    ...editingProduct,
-                    target_group: e.target.value,
-                  })
-                }
-              />
-
-              <input
-                style={styles.input}
-                type="number"
-                value={editingProduct.base_price}
-                onChange={(e) =>
-                  setEditingProduct({
-                    ...editingProduct,
-                    base_price: e.target.value,
-                  })
-                }
-              />
-
-              <input
-                style={{ ...styles.input, gridColumn: "span 2" }}
-                value={editingProduct.image_url || ""}
-                onChange={(e) =>
-                  setEditingProduct({
-                    ...editingProduct,
-                    image_url: e.target.value,
-                  })
-                }
-              />
-
-              <button onClick={handleUpdate} style={styles.addBtn}>
-                Save Changes
-              </button>
-            </div>
-
-            <div style={styles.imagesSection}>
-              <p style={styles.smallEyebrow}>Product Images</p>
-
-              {loadingImages ? (
-                <p style={styles.muted}>Loading images...</p>
-              ) : productImages.filter((image) => image.is_active === true)
-                  .length === 0 ? (
-                <p style={styles.muted}>No active images yet.</p>
-              ) : (
-                <div style={styles.imageThumbRow}>
-                  {productImages
-                    .filter((image) => image.is_active === true)
-                    .map((image) => (
-                      <div key={image.id} style={styles.imageThumbItem}>
-                        <img
-                          src={image.image_url}
-                          alt=""
-                          style={styles.imageThumb}
-                        />
-                        <span style={styles.imageColorTag}>
-                          {image.color_id
-                            ? `Color: ${
-                                productColors.find(
-                                  (c) => Number(c.id) === Number(image.color_id)
-                                )?.color_name || `#${image.color_id}`
-                              }`
-                            : "General image"}
-                        </span>
-                        {image.is_main ? (
-                          <span style={styles.mainBadge}>Main</span>
-                        ) : (
-                          <button
-                            onClick={() => handleSetMainImage(image.id)}
-                            style={styles.imageActionBtn}
-                          >
-                            Set as Main
-                          </button>
-                        )}
-                        <button
-                          onClick={() => handleDeactivateImage(image.id)}
-                          style={styles.imageDeleteBtn}
-                        >
-                          Deactivate
-                        </button>
-                      </div>
-                    ))}
-                </div>
-              )}
-
-              <div style={styles.uploadRow}>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => setUploadFile(e.target.files[0] || null)}
-                />
-                <select
-                  value={uploadColorId}
-                  onChange={(e) => setUploadColorId(e.target.value)}
-                  style={styles.input}
-                >
-                  <option value="">General image / No specific color</option>
-                  {productColors.map((color) => (
-                    <option key={color.id} value={color.id}>
-                      {color.color_name}
-                    </option>
-                  ))}
-                </select>
-                <button onClick={handleImageUpload} style={styles.editBtn}>
-                  Upload Image
-                </button>
-              </div>
-            </div>
-          </section>
-        )}
       </div>
     </div>
   );
@@ -916,29 +468,6 @@ const styles = {
     fontWeight: 400,
     margin: "5px 0 0",
   },
-  formGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(3, 1fr)",
-    gap: "12px",
-  },
-  input: {
-    padding: "13px",
-    border: "1px solid #ddd",
-    fontFamily: "Georgia, serif",
-    fontSize: "14px",
-    background: "#fff",
-  },
-  addBtn: {
-    background: "#111",
-    color: "#fff",
-    border: "none",
-    cursor: "pointer",
-    letterSpacing: "0.12em",
-    textTransform: "uppercase",
-    fontFamily: "Georgia, serif",
-    minHeight: "52px",
-    fontWeight: "700",
-  },
   bottomGrid: {
     display: "grid",
     gridTemplateColumns: "1.3fr 0.7fr",
@@ -996,25 +525,6 @@ const styles = {
     letterSpacing: "0.12em",
     textTransform: "uppercase",
   },
-  productActions: {
-    textAlign: "right",
-    display: "grid",
-    gap: "10px",
-  },
-  editBtn: {
-    padding: "8px 10px",
-    border: "1px solid #111",
-    background: "#fff",
-    cursor: "pointer",
-    marginRight: "8px",
-  },
-  deleteBtn: {
-    padding: "8px 10px",
-    border: "1px solid #d8b5b5",
-    background: "#fff",
-    color: "#b52a2a",
-    cursor: "pointer",
-  },
   orderList: {
     display: "grid",
     gap: "12px",
@@ -1036,71 +546,6 @@ const styles = {
   muted: {
     color: "#999",
     fontSize: "13px",
-  },
-  editPanel: {
-    background: "#fff",
-    border: "1px solid #111",
-    padding: "24px",
-    marginTop: "22px",
-  },
-  imagesSection: {
-    marginTop: "24px",
-    paddingTop: "20px",
-    borderTop: "1px solid #eee",
-  },
-  imageThumbRow: {
-    display: "flex",
-    flexWrap: "wrap",
-    gap: "12px",
-    margin: "12px 0",
-  },
-  imageThumbItem: {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    gap: "6px",
-    width: "88px",
-  },
-  imageThumb: {
-    width: "80px",
-    height: "80px",
-    objectFit: "cover",
-    border: "1px solid #eee",
-  },
-  mainBadge: {
-    fontSize: "10px",
-    letterSpacing: "0.1em",
-    textTransform: "uppercase",
-    color: "#fff",
-    background: "#111",
-    padding: "3px 8px",
-  },
-  imageColorTag: {
-    fontSize: "10px",
-    letterSpacing: "0.05em",
-    color: "#999",
-    textAlign: "center",
-  },
-  imageActionBtn: {
-    fontSize: "11px",
-    padding: "5px 8px",
-    border: "1px solid #111",
-    background: "#fff",
-    cursor: "pointer",
-  },
-  imageDeleteBtn: {
-    fontSize: "11px",
-    padding: "5px 8px",
-    border: "1px solid #d8b5b5",
-    background: "#fff",
-    color: "#b52a2a",
-    cursor: "pointer",
-  },
-  uploadRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: "10px",
-    marginTop: "10px",
   },
 };
 
