@@ -53,6 +53,12 @@ router.put("/", authMiddleware, adminOnly, async (req, res) => {
       secondary_button_text,
       secondary_button_link,
       announcement_text,
+      men_card_image_url,
+      men_card_title,
+      women_card_image_url,
+      women_card_title,
+      studio_card_image_url,
+      studio_card_title,
     } = req.body;
 
     if (!hero_title || !hero_title.trim()) {
@@ -72,6 +78,12 @@ router.put("/", authMiddleware, adminOnly, async (req, res) => {
         secondary_button_text = $7,
         secondary_button_link = $8,
         announcement_text = $9,
+        men_card_image_url = $10,
+        men_card_title = $11,
+        women_card_image_url = $12,
+        women_card_title = $13,
+        studio_card_image_url = $14,
+        studio_card_title = $15,
         updated_at = now()
       WHERE id = 1
       RETURNING *
@@ -86,6 +98,12 @@ router.put("/", authMiddleware, adminOnly, async (req, res) => {
         secondary_button_text || null,
         secondary_button_link || null,
         announcement_text || null,
+        men_card_image_url || null,
+        men_card_title || null,
+        women_card_image_url || null,
+        women_card_title || null,
+        studio_card_image_url || null,
+        studio_card_title || null,
       ]
     );
 

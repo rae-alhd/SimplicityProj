@@ -13,6 +13,12 @@ const DEFAULT_HOMEPAGE_SETTINGS = {
   secondary_button_text: "Open Studio",
   secondary_button_link: "/customize",
   announcement_text: null,
+  men_card_image_url: null,
+  men_card_title: "Men",
+  women_card_image_url: null,
+  women_card_title: "Women",
+  studio_card_image_url: null,
+  studio_card_title: "Custom Studio",
 };
 
 // GET /api/homepage-settings
