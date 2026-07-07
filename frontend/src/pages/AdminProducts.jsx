@@ -15,6 +15,10 @@ export default function AdminProducts() {
     target_group: "",
     base_price: "",
     image_url: "",
+    description: "",
+    stock_quantity: "",
+    is_customizable: false,
+    is_active: true,
   });
 
   const [productImages, setProductImages] = useState([]);
@@ -107,6 +111,11 @@ export default function AdminProducts() {
         body: JSON.stringify({
           ...newProduct,
           base_price: Number(newProduct.base_price),
+          stock_quantity:
+            newProduct.stock_quantity === ""
+              ? 0
+              : Number(newProduct.stock_quantity),
+          description: newProduct.description || null,
         }),
       });
 
@@ -121,6 +130,10 @@ export default function AdminProducts() {
         target_group: "",
         base_price: "",
         image_url: "",
+        description: "",
+        stock_quantity: "",
+        is_customizable: false,
+        is_active: true,
       });
     } catch (err) {
       console.error("Create error:", err);
@@ -492,13 +505,60 @@ export default function AdminProducts() {
             />
 
             <input
-              style={{ ...styles.input, gridColumn: "span 2" }}
+              style={styles.input}
               placeholder="Image URL"
               value={newProduct.image_url}
               onChange={(e) =>
                 setNewProduct({ ...newProduct, image_url: e.target.value })
               }
             />
+
+            <input
+              style={styles.input}
+              placeholder="Stock Quantity"
+              type="number"
+              value={newProduct.stock_quantity}
+              onChange={(e) =>
+                setNewProduct({
+                  ...newProduct,
+                  stock_quantity: e.target.value,
+                })
+              }
+            />
+
+            <textarea
+              style={{ ...styles.input, ...styles.textarea, gridColumn: "span 3" }}
+              placeholder="Description (optional)"
+              value={newProduct.description}
+              onChange={(e) =>
+                setNewProduct({ ...newProduct, description: e.target.value })
+              }
+            />
+
+            <label style={{ ...styles.checkboxLabel, gridColumn: "span 1" }}>
+              <input
+                type="checkbox"
+                checked={newProduct.is_customizable}
+                onChange={(e) =>
+                  setNewProduct({
+                    ...newProduct,
+                    is_customizable: e.target.checked,
+                  })
+                }
+              />
+              Customizable product
+            </label>
+
+            <label style={{ ...styles.checkboxLabel, gridColumn: "span 2" }}>
+              <input
+                type="checkbox"
+                checked={newProduct.is_active}
+                onChange={(e) =>
+                  setNewProduct({ ...newProduct, is_active: e.target.checked })
+                }
+              />
+              Active product
+            </label>
 
             <button onClick={handleCreate} style={styles.addBtn}>
               Add Product
@@ -914,6 +974,16 @@ const styles = {
     fontFamily: "Georgia, serif",
     fontSize: "14px",
     background: "#fff",
+  },
+  textarea: {
+    resize: "vertical",
+    minHeight: "70px",
+  },
+  checkboxLabel: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    fontSize: "14px",
   },
   addBtn: {
     background: "#111",
