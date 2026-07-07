@@ -497,4 +497,109 @@ router.patch("/product/:productId/toggle", async (req, res) => {
   }
 });
 
+// -------------------- DESIGN COLLECTIONS --------------------
+
+// GET /api/admin/customization/collections
+router.get("/collections", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT dc.*, p.name AS product_name
+      FROM design_collections dc
+      JOIN products p ON p.id = dc.product_id
+      ORDER BY dc.product_id ASC, dc.sort_order ASC, dc.id ASC
+      `
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Get design collections error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// POST /api/admin/customization/collections
+router.post("/collections", async (req, res) => {
+  try {
+    const { product_id, name, sort_order = 0 } = req.body;
+
+    if (!product_id) {
+      return res.status(400).json({ error: "product_id is required" });
+    }
+
+    if (!name) {
+      return res.status(400).json({ error: "name is required" });
+    }
+
+    const result = await pool.query(
+      `
+      INSERT INTO design_collections
+      (product_id, name, sort_order)
+      VALUES ($1, $2, $3)
+      RETURNING *
+      `,
+      [product_id, name, sort_order]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error("Add design collection error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// PATCH /api/admin/customization/collections/:id
+router.patch("/collections/:id", async (req, res) => {
+  try {
+    const { name, sort_order, is_active } = req.body;
+
+    const result = await pool.query(
+      `
+      UPDATE design_collections
+      SET
+        name = COALESCE($1, name),
+        sort_order = COALESCE($2, sort_order),
+        is_active = COALESCE($3, is_active)
+      WHERE id = $4
+      RETURNING *
+      `,
+      [name, sort_order, is_active, req.params.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Collection not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Update design collection error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// DELETE /api/admin/customization/collections/:id
+// Soft delete only — sets is_active = false, never hard-deletes.
+router.delete("/collections/:id", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      UPDATE design_collections
+      SET is_active = false
+      WHERE id = $1
+      RETURNING *
+      `,
+      [req.params.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Collection not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Deactivate design collection error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 module.exports = router;
