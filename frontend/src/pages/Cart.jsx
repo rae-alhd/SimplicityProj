@@ -90,7 +90,30 @@ const styles = {
     textTransform: "uppercase",
     borderRadius: "3px",
   },
-  
+
+  designBox: {
+    marginTop: "6px",
+    paddingTop: "6px",
+    borderTop: "1px solid #eee4d8",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "8px",
+  },
+  designBoxText: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "2px",
+  },
+  designThumb: {
+    width: "32px",
+    height: "32px",
+    borderRadius: "6px",
+    objectFit: "cover",
+    border: "1px solid #eee4d8",
+    flexShrink: 0,
+  },
+
   itemPrice: {
     fontSize: "14px",
     fontWeight: 500,
@@ -306,6 +329,29 @@ function CartItem({ item, onChangeQty, onRemove }) {
       {item.custom_note && (
         <div>
           <strong>Note:</strong> {item.custom_note}
+        </div>
+      )}
+
+      {item.design_label && (
+        <div style={styles.designBox}>
+          <div style={styles.designBoxText}>
+            {item.collection_name && (
+              <div>
+                <strong>Collection:</strong> {item.collection_name}
+              </div>
+            )}
+            <div>
+              <strong>Design:</strong> {item.design_label}
+            </div>
+          </div>
+
+          {item.design_image_url && (
+            <img
+              src={item.design_image_url}
+              alt={item.design_label}
+              style={styles.designThumb}
+            />
+          )}
         </div>
       )}
     </div>
