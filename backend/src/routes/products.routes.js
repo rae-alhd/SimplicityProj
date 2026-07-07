@@ -60,6 +60,27 @@ router.get("/:id", async (req, res) => {
     }
   });
 
+  router.get("/:id/colors", async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const result = await pool.query(
+        `
+        SELECT id, color_name, color_hex, sort_order
+        FROM customizable_product_colors
+        WHERE product_id = $1 AND is_active = true
+        ORDER BY sort_order ASC, id ASC
+        `,
+        [id]
+      );
+
+      res.status(200).json(result.rows);
+    } catch (err) {
+      console.error("Error fetching product colors:", err.message);
+      res.status(500).json({ error: "Failed to fetch product colors" });
+    }
+  });
+
   router.post("/", authMiddleware, adminOnly, async (req, res) => {
     try {
         const parsed = productSchema.safeParse(req.body);

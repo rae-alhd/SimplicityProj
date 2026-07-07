@@ -209,6 +209,23 @@ const s = {
     justifyContent: "center",
   }),
 
+  colorRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "10px",
+    marginBottom: "28px",
+  },
+  colorSwatchBtn: (selected) => ({
+    width: "32px",
+    height: "32px",
+    borderRadius: "50%",
+    border: selected ? "2px solid #1a1a1a" : "1px solid #ddd",
+    boxShadow: selected ? "0 0 0 2px #fff inset" : "none",
+    cursor: "pointer",
+    padding: 0,
+    transition: "all 0.18s ease",
+  }),
+
   /* quantity */
   qtyRow: {
     display: "flex",
@@ -342,6 +359,8 @@ export default function ProductDetails({ fetchCart }) {
   const [added, setAdded] = useState(false);
   const [imgError, setImgError] = useState(false);
   const [selectedImageUrl, setSelectedImageUrl] = useState(null);
+  const [colors, setColors] = useState([]);
+  const [selectedColor, setSelectedColor] = useState(null);
 
   useEffect(() => {
     setLoading(true);
@@ -371,6 +390,27 @@ export default function ProductDetails({ fetchCart }) {
     setImgError(false);
   }, [product]);
 
+  useEffect(() => {
+    setColors([]);
+    setSelectedColor(null);
+
+    fetch(`http://localhost:5000/api/products/${id}/colors`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`Server error: ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        const activeColors = Array.isArray(data) ? data : [];
+        setColors(activeColors);
+        if (activeColors.length > 0) {
+          setSelectedColor(activeColors[0].color_name);
+        }
+      })
+      .catch((err) => {
+        console.error("Error fetching product colors:", err);
+      });
+  }, [id]);
+
   const handleAddToCart = async () => {
     if (!selectedSize) {
       alert("Please select a size.");
@@ -394,7 +434,7 @@ export default function ProductDetails({ fetchCart }) {
         },
         body: JSON.stringify({
           product_id: product.id,
-          color: "Default",
+          color: selectedColor || "Default",
           size: selectedSize,
           quantity: qty,
         }),
@@ -584,6 +624,34 @@ export default function ProductDetails({ fetchCart }) {
               </button>
             ))}
           </div>
+
+          {colors.length > 0 && (
+            <>
+              {/* Color selector */}
+              <span style={s.label}>
+                Select Color
+                {selectedColor && (
+                  <span style={{ color: "#1a1a1a", marginLeft: "10px" }}>
+                    — {selectedColor}
+                  </span>
+                )}
+              </span>
+              <div style={s.colorRow}>
+                {colors.map((color) => (
+                  <button
+                    key={color.id}
+                    title={color.color_name}
+                    aria-label={color.color_name}
+                    onClick={() => setSelectedColor(color.color_name)}
+                    style={{
+                      ...s.colorSwatchBtn(selectedColor === color.color_name),
+                      backgroundColor: color.color_hex || "#eee",
+                    }}
+                  />
+                ))}
+              </div>
+            </>
+          )}
 
           {/* Quantity */}
           <span style={s.label}>Quantity</span>
