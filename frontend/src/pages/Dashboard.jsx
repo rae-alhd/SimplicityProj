@@ -451,6 +451,66 @@ function Dashboard({ user, setUser }) {
     };
   }, [products, orders]);
 
+  const earnings = useMemo(() => {
+    const nonCancelledOrders = orders.filter((o) => o.status !== "cancelled");
+
+    const totalRevenue = nonCancelledOrders.reduce(
+      (sum, o) => sum + Number(o.total_price || 0),
+      0
+    );
+
+    const productSales = {};
+
+    nonCancelledOrders.forEach((order) => {
+      (order.items || []).forEach((item) => {
+        const key =
+          item.product_id != null
+            ? `id-${item.product_id}`
+            : `name-${item.product_name}`;
+
+        if (!productSales[key]) {
+          productSales[key] = {
+            product_id: item.product_id,
+            product_name: item.product_name,
+            quantity: 0,
+            revenue: 0,
+          };
+        }
+
+        productSales[key].quantity += Number(item.quantity || 0);
+        productSales[key].revenue +=
+          Number(item.quantity || 0) * Number(item.unit_price || 0);
+      });
+    });
+
+    const totalItemsSold = Object.values(productSales).reduce(
+      (sum, p) => sum + p.quantity,
+      0
+    );
+
+    const bestSellingProducts = Object.values(productSales)
+      .sort((a, b) => b.quantity - a.quantity)
+      .slice(0, 5)
+      .map((entry) => {
+        const currentProduct =
+          entry.product_id != null
+            ? products.find((p) => p.id === entry.product_id)
+            : null;
+
+        return {
+          ...entry,
+          displayName:
+            currentProduct?.name || entry.product_name || "Unknown product",
+        };
+      });
+
+    return {
+      totalRevenue,
+      totalItemsSold,
+      bestSellingProducts,
+    };
+  }, [orders, products]);
+
   const recentProducts = products.slice(0, 5);
   const recentOrders = orders.slice(0, 4);
 
@@ -491,6 +551,57 @@ function Dashboard({ user, setUser }) {
           <StatCard label="Active Products" value={stats.activeProducts} />
           <StatCard label="Customizable" value={stats.customizableProducts} />
           <StatCard label="Pending Orders" value={stats.pendingOrders} />
+        </section>
+
+        <section style={styles.formPanel}>
+          <div style={styles.sectionHeader}>
+            <div>
+              <p style={styles.smallEyebrow}>Business Insights</p>
+              <h2 style={styles.sectionTitle}>Profit / Earnings</h2>
+            </div>
+          </div>
+
+          <div style={styles.statsGrid}>
+            <StatCard
+              label="Total Revenue"
+              value={`$${earnings.totalRevenue.toFixed(2)}`}
+            />
+            <StatCard label="Total Orders" value={stats.totalOrders} />
+            <StatCard
+              label="Total Items Sold"
+              value={earnings.totalItemsSold}
+            />
+            <StatCard label="Pending Orders" value={stats.pendingOrders} />
+          </div>
+
+          <div style={{ marginTop: "22px" }}>
+            <p style={styles.smallEyebrow}>Best-Selling Products (Top 5)</p>
+
+            {earnings.bestSellingProducts.length === 0 ? (
+              <p style={styles.muted}>No sales data yet.</p>
+            ) : (
+              <div style={styles.orderList}>
+                {earnings.bestSellingProducts.map((product, index) => (
+                  <div
+                    key={product.product_id ?? product.product_name ?? index}
+                    style={styles.orderItem}
+                  >
+                    <div>
+                      <strong>{product.displayName}</strong>
+                      <p style={styles.productMeta}>
+                        {product.quantity} sold
+                      </p>
+                    </div>
+                    <strong>${product.revenue.toFixed(2)}</strong>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <p style={{ ...styles.muted, marginTop: "18px" }}>
+            Estimated Profit: Add product cost price to calculate profit.
+          </p>
         </section>
 
         <section style={styles.quickActions}>
