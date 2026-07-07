@@ -81,6 +81,12 @@ export default function AdminProducts() {
           body: JSON.stringify({
             ...editingProduct,
             base_price: Number(editingProduct.base_price),
+            stock_quantity:
+              editingProduct.stock_quantity === "" ||
+              editingProduct.stock_quantity == null
+                ? 0
+                : Number(editingProduct.stock_quantity),
+            description: editingProduct.description || null,
           }),
         }
       );
@@ -680,7 +686,7 @@ export default function AdminProducts() {
               />
 
               <input
-                style={{ ...styles.input, gridColumn: "span 2" }}
+                style={styles.input}
                 value={editingProduct.image_url || ""}
                 onChange={(e) =>
                   setEditingProduct({
@@ -689,6 +695,59 @@ export default function AdminProducts() {
                   })
                 }
               />
+
+              <input
+                style={styles.input}
+                placeholder="Stock Quantity"
+                type="number"
+                value={editingProduct.stock_quantity || ""}
+                onChange={(e) =>
+                  setEditingProduct({
+                    ...editingProduct,
+                    stock_quantity: e.target.value,
+                  })
+                }
+              />
+
+              <textarea
+                style={{ ...styles.input, ...styles.textarea, gridColumn: "span 3" }}
+                placeholder="Description (optional)"
+                value={editingProduct.description || ""}
+                onChange={(e) =>
+                  setEditingProduct({
+                    ...editingProduct,
+                    description: e.target.value,
+                  })
+                }
+              />
+
+              <label style={{ ...styles.checkboxLabel, gridColumn: "span 1" }}>
+                <input
+                  type="checkbox"
+                  checked={!!editingProduct.is_customizable}
+                  onChange={(e) =>
+                    setEditingProduct({
+                      ...editingProduct,
+                      is_customizable: e.target.checked,
+                    })
+                  }
+                />
+                Customizable product
+              </label>
+
+              <label style={{ ...styles.checkboxLabel, gridColumn: "span 2" }}>
+                <input
+                  type="checkbox"
+                  checked={editingProduct.is_active !== false}
+                  onChange={(e) =>
+                    setEditingProduct({
+                      ...editingProduct,
+                      is_active: e.target.checked,
+                    })
+                  }
+                />
+                Active product
+              </label>
 
               <button onClick={handleUpdate} style={styles.addBtn}>
                 Save Changes
