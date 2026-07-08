@@ -46,7 +46,8 @@ router.get("/", authMiddleware, async (req, res) => {
     END
 ) AS price,
 products.customization_extra_price,
-products.image_url
+products.image_url,
+products.stock_quantity
       FROM cart_items
       JOIN products
         ON cart_items.product_id = products.id
@@ -290,23 +291,54 @@ router.patch("/:id", authMiddleware, async (req, res) => {
       const user_id = req.user.id;
       const cart_id = req.params.id;
       const { quantity } = req.body;
-  
+
       if (!quantity) {
         return res.status(400).json({ error: "Quantity required" });
       }
-  
+
+      const cartItemResult = await pool.query(
+        "SELECT product_id FROM cart_items WHERE id = $1 AND user_id = $2",
+        [cart_id, user_id]
+      );
+
+      if (cartItemResult.rows.length === 0) {
+        return res.status(404).json({ error: "Item not found" });
+      }
+
+      const { product_id } = cartItemResult.rows[0];
+
+      const productResult = await pool.query(
+        "SELECT stock_quantity FROM products WHERE id = $1",
+        [product_id]
+      );
+      const stockQuantity = Number(
+        productResult.rows[0]?.stock_quantity || 0
+      );
+
+      if (stockQuantity <= 0) {
+        return res
+          .status(400)
+          .json({ error: "This product is out of stock." });
+      }
+
+      if (Number(quantity) > stockQuantity) {
+        return res.status(400).json({
+          error: `Only ${stockQuantity} item(s) available in stock.`,
+        });
+      }
+
       const result = await pool.query(
-        `UPDATE cart_items 
-         SET quantity = $1 
-         WHERE id = $2 AND user_id = $3 
+        `UPDATE cart_items
+         SET quantity = $1
+         WHERE id = $2 AND user_id = $3
          RETURNING *`,
         [quantity, cart_id, user_id]
       );
-  
+
       if (result.rows.length === 0) {
         return res.status(404).json({ error: "Item not found" });
       }
-  
+
       res.json(result.rows[0]);
     } catch (err) {
       console.error("Update cart error:", err);
@@ -316,14 +348,54 @@ router.patch("/:id", authMiddleware, async (req, res) => {
 // This route updates the quantity of a specific cart item
 router.put("/:id", authMiddleware, async (req, res) => {
     try {
+      const user_id = req.user.id;
       const id = req.params.id;
       const { quantity } = req.body;
-  
-      const result = await pool.query(
-        "UPDATE cart_items SET quantity = $1 WHERE id = $2 RETURNING *",
-        [quantity, id]
+
+      if (!quantity) {
+        return res.status(400).json({ error: "Quantity required" });
+      }
+
+      const cartItemResult = await pool.query(
+        "SELECT product_id FROM cart_items WHERE id = $1 AND user_id = $2",
+        [id, user_id]
       );
-  
+
+      if (cartItemResult.rows.length === 0) {
+        return res.status(404).json({ error: "Item not found" });
+      }
+
+      const { product_id } = cartItemResult.rows[0];
+
+      const productResult = await pool.query(
+        "SELECT stock_quantity FROM products WHERE id = $1",
+        [product_id]
+      );
+      const stockQuantity = Number(
+        productResult.rows[0]?.stock_quantity || 0
+      );
+
+      if (stockQuantity <= 0) {
+        return res
+          .status(400)
+          .json({ error: "This product is out of stock." });
+      }
+
+      if (Number(quantity) > stockQuantity) {
+        return res.status(400).json({
+          error: `Only ${stockQuantity} item(s) available in stock.`,
+        });
+      }
+
+      const result = await pool.query(
+        "UPDATE cart_items SET quantity = $1 WHERE id = $2 AND user_id = $3 RETURNING *",
+        [quantity, id, user_id]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: "Item not found" });
+      }
+
       res.json(result.rows[0]);
     } catch (err) {
       console.error("Update cart error:", err);
