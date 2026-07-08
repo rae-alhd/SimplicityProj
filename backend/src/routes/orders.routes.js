@@ -90,6 +90,47 @@ const cartResult = await client.query(
       return res.status(400).json({ error: "Your cart is empty." });
     }
 
+    // 1.5 Aggregate cart quantity per product (same product can appear as
+    // multiple cart rows with different size/color/customization/design,
+    // but they all draw from the same products.stock_quantity pool).
+    const quantityByProduct = new Map();
+    for (const item of cartItems) {
+      const current = quantityByProduct.get(item.product_id) || 0;
+      quantityByProduct.set(
+        item.product_id,
+        current + Number(item.quantity || 0)
+      );
+    }
+
+    // 1.6 Check stock for every product before creating the order, locking
+    // each product row so concurrent checkouts can't oversell the same stock.
+    for (const [productId, requestedQuantity] of quantityByProduct.entries()) {
+      const stockResult = await client.query(
+        "SELECT name, stock_quantity FROM products WHERE id = $1 FOR UPDATE",
+        [productId]
+      );
+
+      if (stockResult.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Product not found." });
+      }
+
+      const { name, stock_quantity } = stockResult.rows[0];
+      const availableStock = Number(stock_quantity || 0);
+
+      if (availableStock <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: `${name} is out of stock.` });
+      }
+
+      if (requestedQuantity > availableStock) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: `Only ${availableStock} item(s) available for ${name}.`,
+        });
+      }
+    }
+
     // 2. Calculate total
     const totalPrice = cartItems.reduce((sum, item) => {
       return sum + parseFloat(item.final_unit_price) * item.quantity;
@@ -151,6 +192,14 @@ for (const item of cartItems) {
     ]
   );
 }
+
+    // 4.5 Reduce stock now that the order and its items were created successfully
+    for (const [productId, requestedQuantity] of quantityByProduct.entries()) {
+      await client.query(
+        "UPDATE products SET stock_quantity = stock_quantity - $1 WHERE id = $2",
+        [requestedQuantity, productId]
+      );
+    }
 
     // 5. Clear the user's cart
     await client.query("DELETE FROM cart_items WHERE user_id = $1", [userId]);
