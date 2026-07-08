@@ -119,6 +119,21 @@ const styles = {
     fontWeight: 500,
     color: "#111",
   },
+  stockText: {
+    fontSize: "11px",
+    color: "#888",
+    marginTop: "4px",
+  },
+  stockTextOut: {
+    fontSize: "11px",
+    color: "#e05252",
+    marginTop: "4px",
+  },
+  maxStockText: {
+    fontSize: "10px",
+    color: "#e05252",
+    marginTop: "4px",
+  },
   itemFooter: {
     display: "flex",
     alignItems: "center",
@@ -286,6 +301,11 @@ function CartItem({ item, onChangeQty, onRemove }) {
   const [minusHover, setMinusHover] = useState(false);
   const [plusHover, setPlusHover] = useState(false);
 
+  const stockQuantity = Number(item.stock_quantity || 0);
+  const isOutOfStock = stockQuantity <= 0;
+  const isMaxStock = !isOutOfStock && item.quantity >= stockQuantity;
+  const isPlusDisabled = isOutOfStock || isMaxStock;
+
   return (
     <div style={styles.card}>
       {/* Image placeholder — swap with <img> once you have product images */}
@@ -361,6 +381,10 @@ function CartItem({ item, onChangeQty, onRemove }) {
     <div style={styles.itemPrice}>${Number(item.price).toFixed(2)}</div>
   )}
 
+  <div style={isOutOfStock ? styles.stockTextOut : styles.stockText}>
+    {isOutOfStock ? "Out of stock" : `Available stock: ${stockQuantity}`}
+  </div>
+
   <div style={styles.itemFooter}>
           {/* Quantity stepper */}
           <div style={styles.qtyControl}>
@@ -380,11 +404,14 @@ function CartItem({ item, onChangeQty, onRemove }) {
             <button
               style={{
                 ...styles.qtyBtn,
-                backgroundColor: plusHover ? "#f5f5f3" : "transparent",
+                backgroundColor: plusHover && !isPlusDisabled ? "#f5f5f3" : "transparent",
+                opacity: isPlusDisabled ? 0.4 : 1,
+                cursor: isPlusDisabled ? "not-allowed" : "pointer",
               }}
               onMouseEnter={() => setPlusHover(true)}
               onMouseLeave={() => setPlusHover(false)}
               onClick={() => onChangeQty(item.id, 1)}
+              disabled={isPlusDisabled}
               aria-label="Increase quantity"
             >
               +
@@ -406,6 +433,10 @@ function CartItem({ item, onChangeQty, onRemove }) {
             <TrashIcon />
           </button>
         </div>
+
+        {isMaxStock && (
+          <div style={styles.maxStockText}>Max stock reached</div>
+        )}
       </div>
     </div>
   );
@@ -478,10 +509,16 @@ function Cart() {
   const handleChangeQty = async (id, delta) => {
     try {
       const token = localStorage.getItem("token");
-  
+
       const item = cart.find((i) => i.id === id);
+      const stockQuantity = Number(item.stock_quantity || 0);
       const newQuantity = Math.max(1, item.quantity + delta);
-  
+
+      if (delta > 0 && newQuantity > stockQuantity) {
+        alert(`Only ${stockQuantity} item(s) available in stock.`);
+        return;
+      }
+
       await fetch(`http://localhost:5000/api/cart/${id}`, {
         method: "PUT",
         headers: {
