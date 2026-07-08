@@ -78,6 +78,20 @@ const customizationLabelStyle = {
   marginTop: "2px",
 };
 
+const outOfStockBadgeStyle = {
+  position: "absolute",
+  top: "10px",
+  left: "10px",
+  background: "#1a1a1a",
+  color: "#fff",
+  fontSize: "9px",
+  letterSpacing: "0.14em",
+  textTransform: "uppercase",
+  padding: "4px 8px",
+  fontFamily: "'Cormorant Garamond', Georgia, serif",
+  zIndex: 1,
+};
+
 const btnStyle = {
   marginTop: "12px",
   padding: "10px 0",
@@ -96,6 +110,7 @@ const btnStyle = {
 export default function ProductCard({ product }) {
   const navigate = useNavigate();
   const displayImageUrl = product.main_image_url || product.image_url;
+  const isOutOfStock = Number(product.stock_quantity || 0) <= 0;
 
   const handleClick = () => {
     navigate(`/products/${product.id}`);
@@ -118,6 +133,9 @@ export default function ProductCard({ product }) {
       }}
     >
       <div style={imageWrapStyle}>
+        {isOutOfStock && (
+          <span style={outOfStockBadgeStyle}>Out of Stock</span>
+        )}
         {displayImageUrl ? (
           <img
             src={displayImageUrl}

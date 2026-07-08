@@ -154,6 +154,25 @@ const styles = {
     padding: "4px 8px",
     zIndex: 2,
   },
+  outOfStockBadge: {
+    position: "absolute",
+    top: "12px",
+    right: "12px",
+    backgroundColor: CHARCOAL,
+    color: "#fff",
+    fontSize: "8px",
+    fontFamily: "'Helvetica Neue', Helvetica, sans-serif",
+    fontWeight: 700,
+    letterSpacing: "2.5px",
+    textTransform: "uppercase",
+    padding: "4px 8px",
+    zIndex: 2,
+  },
+  btnDisabled: {
+    backgroundColor: "#ccc",
+    color: "#fff",
+    cursor: "not-allowed",
+  },
 
   cardBody: {
     padding: "20px 22px 24px",
@@ -316,6 +335,7 @@ function ProductCard({ product, navigate }) {
   };
 
   const isCustomizable = !!product.is_customizable;
+  const isOutOfStock = Number(product.stock_quantity || 0) <= 0;
   const displayImageUrl = product.main_image_url || product.image_url;
 
   return (
@@ -331,6 +351,9 @@ function ProductCard({ product, navigate }) {
       {/* Image */}
       <div style={styles.imageWrap}>
         {isCustomizable && <span style={styles.customBadge}>Custom</span>}
+        {isOutOfStock && (
+          <span style={styles.outOfStockBadge}>Out of Stock</span>
+        )}
 
         {displayImageUrl ? (
           <img
@@ -371,18 +394,28 @@ function ProductCard({ product, navigate }) {
         </p>
 
         {isCustomizable ? (
-          <button
-            style={{
-              ...styles.btnBase,
-              ...styles.btnCustomize,
-              opacity: btnHovered ? 0.85 : 1,
-            }}
-            onClick={handleCustomize}
-            onMouseEnter={() => setBtnHovered(true)}
-            onMouseLeave={() => setBtnHovered(false)}
-          >
-            Customize
-          </button>
+          isOutOfStock ? (
+            <button
+              style={{ ...styles.btnBase, ...styles.btnDisabled }}
+              onClick={(e) => e.stopPropagation()}
+              disabled
+            >
+              Out of Stock
+            </button>
+          ) : (
+            <button
+              style={{
+                ...styles.btnBase,
+                ...styles.btnCustomize,
+                opacity: btnHovered ? 0.85 : 1,
+              }}
+              onClick={handleCustomize}
+              onMouseEnter={() => setBtnHovered(true)}
+              onMouseLeave={() => setBtnHovered(false)}
+            >
+              Customize
+            </button>
+          )
         ) : (
           <button
             style={{

@@ -4,6 +4,14 @@ import hoodieImg from "../assets/white-hoodie.png";
 
 const API_BASE = "http://localhost:5000/api";
 
+// /api/customization/products and /api/customization/products/:id do not
+// currently select stock_quantity, so this only takes effect once that field
+// is present on the product object (kept defensive so it doesn't flag every
+// product as out of stock in the meantime).
+function isProductOutOfStock(p) {
+  return p?.stock_quantity !== undefined && Number(p.stock_quantity || 0) <= 0;
+}
+
 function CustomizePage() {
   const navigate = useNavigate();
 
@@ -131,6 +139,11 @@ function CustomizePage() {
 
     if (!product || !selectedColor || !selectedSize || !selectedOption) {
       alert("Please choose product, color, size, and customization option.");
+      return;
+    }
+
+    if (isProductOutOfStock(product)) {
+      alert("This product is out of stock.");
       return;
     }
 
@@ -272,19 +285,24 @@ function CustomizePage() {
                     {products.map((p) => {
                       const displayImageUrl = p.main_image_url || p.image_url;
                       const isSelected = selectedProductId === p.id;
+                      const outOfStock = isProductOutOfStock(p);
 
                       return (
                         <button
                           key={p.id}
                           onClick={() => {
+                            if (outOfStock) return;
                             setSelectedProductId(p.id);
                             setIsProductPickerOpen(false);
                           }}
+                          disabled={outOfStock}
                           style={{
                             ...styles.productCard,
                             border: isSelected
                               ? "2px solid #111"
                               : "1px solid #e5e0d8",
+                            opacity: outOfStock ? 0.5 : 1,
+                            cursor: outOfStock ? "not-allowed" : "pointer",
                           }}
                         >
                           <div style={styles.productCardImageWrap}>
@@ -309,6 +327,11 @@ function CustomizePage() {
                           {p.category && (
                             <span style={styles.productCardCategory}>
                               {p.category}
+                            </span>
+                          )}
+                          {outOfStock && (
+                            <span style={styles.productCardOutOfStock}>
+                              Out of Stock
                             </span>
                           )}
                         </button>
@@ -339,6 +362,11 @@ function CustomizePage() {
                               ${Number(product.base_price).toFixed(2)}
                             </p>
                           )}
+                        {isProductOutOfStock(product) && (
+                          <span style={styles.productCardOutOfStock}>
+                            Out of Stock
+                          </span>
+                        )}
                       </div>
                     </div>
                     <button
@@ -557,13 +585,18 @@ function CustomizePage() {
 
               <button
                 onClick={handleAddToCart}
-                disabled={adding}
+                disabled={adding || isProductOutOfStock(product)}
                 style={{
                   ...styles.addBtn,
-                  opacity: adding ? 0.6 : 1,
+                  opacity: adding || isProductOutOfStock(product) ? 0.6 : 1,
+                  cursor: isProductOutOfStock(product) ? "not-allowed" : "pointer",
                 }}
               >
-                {adding ? "Adding..." : "Add Customized Hoodie"}
+                {isProductOutOfStock(product)
+                  ? "Out of Stock"
+                  : adding
+                  ? "Adding..."
+                  : "Add Customized Hoodie"}
               </button>
 
               <p style={styles.note}>
@@ -798,6 +831,12 @@ const styles = {
     letterSpacing: "0.1em",
     textTransform: "uppercase",
     color: "#9b8c73",
+  },
+  productCardOutOfStock: {
+    fontSize: "9px",
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    color: "#c0392b",
   },
   collectionTabs: {
     display: "flex",

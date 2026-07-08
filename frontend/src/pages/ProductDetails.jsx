@@ -151,8 +151,16 @@ const s = {
     fontWeight: "400",
     letterSpacing: "0.06em",
     color: "#1a1a1a",
-    marginBottom: "28px",
+    marginBottom: "8px",
     fontFamily: FONT,
+  },
+  stockStatus: {
+    display: "block",
+    fontSize: "11px",
+    letterSpacing: "0.14em",
+    textTransform: "uppercase",
+    fontFamily: FONT,
+    marginBottom: "20px",
   },
 
   divider: {
@@ -294,6 +302,15 @@ const s = {
     textTransform: "uppercase",
     cursor: "pointer",
     transition: "all 0.2s",
+  },
+  disabledBtn: {
+    background: "#ccc",
+    cursor: "not-allowed",
+  },
+  disabledBtnOutline: {
+    color: "#bbb",
+    borderColor: "#ddd",
+    cursor: "not-allowed",
   },
 
   /* added feedback */
@@ -443,11 +460,16 @@ export default function ProductDetails({ fetchCart }) {
   }, [id]);
 
   const handleAddToCart = async () => {
+    if (Number(product?.stock_quantity || 0) <= 0) {
+      alert("This product is out of stock.");
+      return;
+    }
+
     if (!selectedSize) {
       alert("Please select a size.");
       return;
     }
-  
+
     try {
       const token = localStorage.getItem("token");
   
@@ -494,6 +516,10 @@ export default function ProductDetails({ fetchCart }) {
   };
 
   const handleCustomize = () => {
+    if (Number(product?.stock_quantity || 0) <= 0) {
+      alert("This product is out of stock.");
+      return;
+    }
     navigate(`/customize?id=${product.id}`);
   };
 
@@ -518,6 +544,7 @@ export default function ProductDetails({ fetchCart }) {
   const showImage = selectedImageUrl && !imgError;
   const activeGallery = getActiveGallery(product, selectedColor);
   const hasMultipleImages = activeGallery.length > 1;
+  const isOutOfStock = Number(product.stock_quantity || 0) <= 0;
 
   return (
     <div style={s.page}>
@@ -616,6 +643,16 @@ export default function ProductDetails({ fetchCart }) {
               ? `$${Number(product.base_price).toFixed(2)}`
               : "—"}
           </div>
+
+          {/* Stock status */}
+          <span
+            style={{
+              ...s.stockStatus,
+              color: isOutOfStock ? "#c0392b" : "#4a7c59",
+            }}
+          >
+            {isOutOfStock ? "Out of Stock" : "In Stock"}
+          </span>
 
           <hr style={s.divider} />
 
@@ -721,28 +758,42 @@ export default function ProductDetails({ fetchCart }) {
           {/* Actions */}
           <div style={s.actionStack}>
             <button
-              style={s.addToCart}
+              style={{
+                ...s.addToCart,
+                ...(isOutOfStock ? s.disabledBtn : {}),
+              }}
               onClick={handleAddToCart}
-              onMouseEnter={(e) => (e.currentTarget.style.background = "#333")}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "#1a1a1a")}
+              disabled={isOutOfStock}
+              onMouseEnter={(e) => {
+                if (!isOutOfStock) e.currentTarget.style.background = "#333";
+              }}
+              onMouseLeave={(e) => {
+                if (!isOutOfStock) e.currentTarget.style.background = "#1a1a1a";
+              }}
             >
-              Add to Cart
+              {isOutOfStock ? "Out of Stock" : "Add to Cart"}
             </button>
 
             {product.is_customizable && (
               <button
-                style={s.customize}
+                style={{
+                  ...s.customize,
+                  ...(isOutOfStock ? s.disabledBtnOutline : {}),
+                }}
                 onClick={handleCustomize}
+                disabled={isOutOfStock}
                 onMouseEnter={(e) => {
+                  if (isOutOfStock) return;
                   e.currentTarget.style.background = "#1a1a1a";
                   e.currentTarget.style.color = "#fff";
                 }}
                 onMouseLeave={(e) => {
+                  if (isOutOfStock) return;
                   e.currentTarget.style.background = "#fff";
                   e.currentTarget.style.color = "#1a1a1a";
                 }}
               >
-                Customize This Product
+                {isOutOfStock ? "Out of Stock" : "Customize This Product"}
               </button>
             )}
           </div>
