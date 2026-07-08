@@ -10,6 +10,27 @@ const STATUS_STYLES = {
   cancelled: { background: "#fdf2f2", color: "#b52a2a", border: "1px solid #f0b3b3" },
 };
 
+// Matches order id (plain or "#123" style), customer name/email/phone, and
+// any item's product name — all case-insensitive substring matches.
+function orderMatchesSearch(order, normalizedTerm) {
+  const cleanTerm = normalizedTerm.replace(/^#/, "");
+
+  const idCandidates = [String(order.id), String(order.id).padStart(5, "0")];
+  if (idCandidates.some((candidate) => candidate.includes(cleanTerm))) {
+    return true;
+  }
+
+  const textFields = [order.customer_name, order.user_email, order.phone];
+  if (textFields.some((field) => field && field.toLowerCase().includes(normalizedTerm))) {
+    return true;
+  }
+
+  const items = Array.isArray(order.items) ? order.items : [];
+  return items.some(
+    (item) => item.product_name && item.product_name.toLowerCase().includes(normalizedTerm)
+  );
+}
+
 function OrderCard({ order, onStatusChange, productImageMap }) {
   const [status, setStatus]     = useState(order.status || "pending");
   const [saving, setSaving]     = useState(false);
@@ -259,6 +280,7 @@ export default function AdminOrders() {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState("");
   const [filter, setFilter]   = useState("all");
+  const [searchTerm, setSearchTerm] = useState("");
   const [productImageMap, setProductImageMap] = useState({});
   const navigate              = useNavigate();
   const token                 = localStorage.getItem("token");
@@ -302,9 +324,15 @@ export default function AdminOrders() {
     );
   };
 
-  const filtered = filter === "all"
+  const statusFiltered = filter === "all"
     ? orders
     : orders.filter((o) => o.status === filter);
+
+  const normalizedSearch = searchTerm.trim().toLowerCase();
+
+  const filtered = normalizedSearch
+    ? statusFiltered.filter((o) => orderMatchesSearch(o, normalizedSearch))
+    : statusFiltered;
 
   const counts = STATUS_OPTIONS.reduce((acc, s) => {
     acc[s] = orders.filter((o) => o.status === s).length;
@@ -339,6 +367,17 @@ export default function AdminOrders() {
             onClick={() => setFilter("cancelled")} color="#b52a2a" />
         </div>
 
+        {/* ── Search ── */}
+        <div style={s.searchRow}>
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Search by order, customer, email, phone, product..."
+            style={s.searchInput}
+          />
+        </div>
+
         <div style={s.divider} />
 
         {/* ── States ── */}
@@ -358,7 +397,11 @@ export default function AdminOrders() {
         {!loading && !error && filtered.length === 0 && (
           <div style={s.centerState}>
             <p style={s.emptyIcon}>📋</p>
-            <p style={s.stateText}>No {filter !== "all" ? filter : ""} orders found.</p>
+            <p style={s.stateText}>
+              {normalizedSearch
+                ? "No orders match your search."
+                : `No ${filter !== "all" ? filter : ""} orders found.`}
+            </p>
           </div>
         )}
 
@@ -481,6 +524,22 @@ const s = {
     height: "1px",
     background: "#e0dbd4",
     marginBottom: "28px",
+  },
+
+  // Search
+  searchRow: {
+    marginBottom: "20px",
+  },
+  searchInput: {
+    width: "100%",
+    padding: "12px 16px",
+    border: "1px solid #e0dbd4",
+    background: "#fff",
+    fontFamily: "'Georgia', serif",
+    fontSize: "0.85rem",
+    color: "#1a1a1a",
+    outline: "none",
+    boxSizing: "border-box",
   },
 
   // States
