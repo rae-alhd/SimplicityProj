@@ -91,6 +91,44 @@ router.post("/", authMiddleware, async (req, res) => {
       return res.status(400).json({ error: "product_id is required" });
     }
 
+    // 🔍 Stock guard: product must exist, be in stock, and have enough
+    // stock left to cover what's already in the cart plus this addition.
+    // Customized and non-customized cart items share the same product row,
+    // so stock is checked as a total across all cart_items for this product.
+    const productResult = await pool.query(
+      "SELECT stock_quantity FROM products WHERE id = $1",
+      [product_id]
+    );
+
+    if (productResult.rows.length === 0) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    const stockQuantity = Number(productResult.rows[0].stock_quantity || 0);
+
+    if (stockQuantity <= 0) {
+      return res.status(400).json({ error: "This product is out of stock." });
+    }
+
+    const existingQtyResult = await pool.query(
+      `
+      SELECT COALESCE(SUM(quantity), 0) AS total_quantity
+      FROM cart_items
+      WHERE user_id = $1 AND product_id = $2
+      `,
+      [user_id, product_id]
+    );
+    const existingCartQuantity = Number(
+      existingQtyResult.rows[0].total_quantity || 0
+    );
+
+    if (existingCartQuantity + qty > stockQuantity) {
+      const remaining = Math.max(stockQuantity - existingCartQuantity, 0);
+      return res.status(400).json({
+        error: `Only ${remaining} item(s) available in stock.`,
+      });
+    }
+
     // 🔍 Normalize design_id: missing/null/undefined/"" -> null, otherwise must be a valid number
     let design_id = null;
     if (rawDesignId !== null && rawDesignId !== undefined && rawDesignId !== "") {
