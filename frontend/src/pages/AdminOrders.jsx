@@ -67,6 +67,16 @@ function OrderCard({ order, onStatusChange }) {
           <span style={{ ...s.statusPill, ...STATUS_STYLES[status] }}>
             {status.charAt(0).toUpperCase() + status.slice(1)}
           </span>
+          {status === "cancelled" && (
+            <span
+              style={{
+                ...s.stockBadge,
+                ...(order.stock_restored ? s.stockBadgeRestored : s.stockBadgePending),
+              }}
+            >
+              {order.stock_restored ? "Stock restored" : "Stock not restored yet"}
+            </span>
+          )}
         </div>
       </div>
 
@@ -476,7 +486,25 @@ const s = {
     borderBottom: "1px solid #f0ece6",
   },
   cardHeaderLeft: { display: "flex", alignItems: "center", gap: "14px" },
-  cardHeaderRight: {},
+  cardHeaderRight: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-end",
+    gap: "6px",
+  },
+  stockBadge: {
+    display: "inline-block",
+    fontSize: "0.62rem",
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    fontFamily: "sans-serif",
+  },
+  stockBadgeRestored: {
+    color: "#1a7a45",
+  },
+  stockBadgePending: {
+    color: "#b07d2a",
+  },
   orderId: {
     fontFamily: "monospace",
     fontSize: "0.95rem",
