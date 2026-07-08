@@ -1,6 +1,42 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
+const PRODUCT_FILTERS = [
+  { key: "all", label: "All" },
+  { key: "active", label: "Active" },
+  { key: "inactive", label: "Inactive" },
+  { key: "customizable", label: "Customizable" },
+  { key: "ready_to_wear", label: "Ready-to-wear only" },
+  { key: "in_stock", label: "In Stock" },
+  { key: "out_of_stock", label: "Out of Stock" },
+];
+
+function productMatchesFilter(product, filterKey) {
+  switch (filterKey) {
+    case "active":
+      return product.is_active !== false;
+    case "inactive":
+      return product.is_active === false;
+    case "customizable":
+      return product.is_customizable === true;
+    case "ready_to_wear":
+      return product.is_customizable !== true;
+    case "in_stock":
+      return Number(product.stock_quantity || 0) > 0;
+    case "out_of_stock":
+      return Number(product.stock_quantity || 0) <= 0;
+    default:
+      return true;
+  }
+}
+
+function productMatchesSearch(product, normalizedTerm) {
+  const fields = [product.name, product.category, product.target_group];
+  return fields.some(
+    (field) => field && field.toLowerCase().includes(normalizedTerm)
+  );
+}
+
 export default function AdminProducts() {
   const navigate = useNavigate();
   const token = localStorage.getItem("token");
@@ -8,6 +44,8 @@ export default function AdminProducts() {
   const [products, setProducts] = useState([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
   const [editingProduct, setEditingProduct] = useState(null);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [productFilter, setProductFilter] = useState("all");
 
   const [newProduct, setNewProduct] = useState({
     name: "",
@@ -453,6 +491,18 @@ export default function AdminProducts() {
     setEditingColorId(null);
   }, [editingProduct?.id]);
 
+  const filterFilteredProducts = products.filter((product) =>
+    productMatchesFilter(product, productFilter)
+  );
+
+  const normalizedSearch = searchTerm.trim().toLowerCase();
+
+  const visibleProducts = normalizedSearch
+    ? filterFilteredProducts.filter((product) =>
+        productMatchesSearch(product, normalizedSearch)
+      )
+    : filterFilteredProducts;
+
   return (
     <div style={styles.page}>
       <div style={styles.container}>
@@ -589,12 +639,43 @@ export default function AdminProducts() {
               <h2 style={styles.sectionTitle}>Products</h2>
             </div>
             <span style={styles.muted}>
-              {loadingProducts ? "Loading..." : `${products.length} products`}
+              {loadingProducts
+                ? "Loading..."
+                : `${visibleProducts.length} products`}
             </span>
           </div>
 
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Search products by name, category, target..."
+            style={styles.searchInput}
+          />
+
+          <div style={styles.filterRow}>
+            {PRODUCT_FILTERS.map((filterOption) => (
+              <button
+                key={filterOption.key}
+                onClick={() => setProductFilter(filterOption.key)}
+                style={{
+                  ...styles.filterChip,
+                  ...(productFilter === filterOption.key
+                    ? styles.filterChipActive
+                    : {}),
+                }}
+              >
+                {filterOption.label}
+              </button>
+            ))}
+          </div>
+
+          {!loadingProducts && visibleProducts.length === 0 && (
+            <p style={styles.muted}>No products match your search.</p>
+          )}
+
           <div style={styles.productList}>
-            {products.map((product) => (
+            {visibleProducts.map((product) => (
               <div key={product.id} style={styles.productItem}>
                 <div style={styles.productLeft}>
                   <div style={styles.productThumb}>
@@ -1013,6 +1094,36 @@ const styles = {
     border: "1px solid #e0dbd4",
     padding: "24px",
     marginBottom: "22px",
+  },
+  searchInput: {
+    width: "100%",
+    padding: "12px 14px",
+    border: "1px solid #ddd",
+    fontFamily: "Georgia, serif",
+    fontSize: "14px",
+    background: "#fff",
+    boxSizing: "border-box",
+    marginBottom: "14px",
+  },
+  filterRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "8px",
+    marginBottom: "18px",
+  },
+  filterChip: {
+    padding: "7px 14px",
+    border: "1px solid #e0dbd4",
+    background: "#fff",
+    cursor: "pointer",
+    fontFamily: "Georgia, serif",
+    fontSize: "12px",
+    color: "#888",
+  },
+  filterChipActive: {
+    background: "#111",
+    color: "#fff",
+    borderColor: "#111",
   },
   sectionHeader: {
     display: "flex",
