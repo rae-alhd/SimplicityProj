@@ -8,6 +8,7 @@ function Dashboard({ user, setUser }) {
   const [orders, setOrders] = useState([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
   const [loadingOrders, setLoadingOrders] = useState(true);
+  const [lowStockThreshold, setLowStockThreshold] = useState(5);
 
   const token = localStorage.getItem("token");
 
@@ -56,9 +57,33 @@ function Dashboard({ user, setUser }) {
     navigate("/login");
   };
 
+  const fetchStoreSettings = async () => {
+    try {
+      if (!token) return;
+
+      const res = await fetch("http://localhost:5000/api/admin/settings", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!res.ok) return;
+
+      const data = await res.json();
+      const threshold = Number(data.low_stock_threshold);
+
+      if (Number.isInteger(threshold) && threshold >= 1) {
+        setLowStockThreshold(threshold);
+      }
+    } catch (err) {
+      console.error("Error fetching store settings:", err);
+    }
+  };
+
   useEffect(() => {
     fetchProducts();
     fetchOrders();
+    fetchStoreSettings();
   }, []);
 
   const stats = useMemo(() => {
@@ -134,6 +159,25 @@ function Dashboard({ user, setUser }) {
       bestSellingProducts,
     };
   }, [orders, products]);
+
+  const outOfStockProducts = useMemo(
+    () => products.filter((p) => Number(p.stock_quantity || 0) <= 0),
+    [products]
+  );
+
+  const lowStockProducts = useMemo(
+    () =>
+      products.filter((p) => {
+        const stockQuantity = Number(p.stock_quantity || 0);
+        return stockQuantity > 0 && stockQuantity <= lowStockThreshold;
+      }),
+    [products, lowStockThreshold]
+  );
+
+  const attentionProducts = [...outOfStockProducts, ...lowStockProducts].slice(
+    0,
+    5
+  );
 
   const recentProducts = products.slice(0, 5);
   const recentOrders = orders.slice(0, 4);
@@ -247,6 +291,60 @@ function Dashboard({ user, setUser }) {
           <p style={{ ...styles.muted, marginTop: "18px" }}>
             Estimated Profit: Add product cost price to calculate profit.
           </p>
+        </section>
+
+        <section style={styles.formPanel}>
+          <div style={styles.sectionHeader}>
+            <div>
+              <p style={styles.smallEyebrow}>Business Insights</p>
+              <h2 style={styles.sectionTitle}>Inventory Alerts</h2>
+            </div>
+          </div>
+
+          <div style={styles.statsGrid}>
+            <StatCard label="Out of Stock" value={outOfStockProducts.length} />
+            <StatCard label="Low Stock" value={lowStockProducts.length} />
+            <StatCard label="Low Stock Threshold" value={lowStockThreshold} />
+          </div>
+
+          {attentionProducts.length === 0 ? (
+            <p style={{ ...styles.muted, marginTop: "18px" }}>
+              All products are sufficiently stocked.
+            </p>
+          ) : (
+            <div style={{ ...styles.orderList, marginTop: "18px" }}>
+              {attentionProducts.map((product) => {
+                const stockQuantity = Number(product.stock_quantity || 0);
+                const isOutOfStock = stockQuantity <= 0;
+
+                return (
+                  <div key={product.id} style={styles.orderItem}>
+                    <div>
+                      <strong>{product.name}</strong>
+                      <p style={styles.productMeta}>Stock: {stockQuantity}</p>
+                    </div>
+                    <span
+                      style={{
+                        ...styles.alertBadge,
+                        ...(isOutOfStock
+                          ? styles.alertBadgeBad
+                          : styles.alertBadgeWarning),
+                      }}
+                    >
+                      {isOutOfStock ? "Out of stock" : "Low stock"}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <button
+            onClick={() => navigate("/admin/products")}
+            style={{ ...styles.actionBtnLight, marginTop: "18px" }}
+          >
+            Manage Products
+          </button>
         </section>
 
         <section style={styles.bottomGrid}>
@@ -535,6 +633,22 @@ const styles = {
     display: "flex",
     justifyContent: "space-between",
     gap: "12px",
+  },
+  alertBadge: {
+    display: "inline-block",
+    alignSelf: "center",
+    padding: "3px 9px",
+    fontSize: "10px",
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+  },
+  alertBadgeBad: {
+    background: "#fbeaea",
+    color: "#b52a2a",
+  },
+  alertBadgeWarning: {
+    background: "#fdf3e0",
+    color: "#b07d2a",
   },
   textBtn: {
     border: "none",
