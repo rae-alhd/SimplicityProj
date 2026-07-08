@@ -30,6 +30,20 @@ function productMatchesFilter(product, filterKey) {
   }
 }
 
+function getStockBadge(product) {
+  const stockQuantity = Number(product.stock_quantity || 0);
+
+  if (stockQuantity <= 0) {
+    return { label: "Out of stock", variant: "badgeBad" };
+  }
+
+  if (stockQuantity <= 5) {
+    return { label: `Low stock: ${stockQuantity}`, variant: "badgeWarning" };
+  }
+
+  return { label: `Stock: ${stockQuantity}`, variant: "badgeGood" };
+}
+
 function productMatchesSearch(product, normalizedTerm) {
   const fields = [product.name, product.category, product.target_group];
   return fields.some(
@@ -719,18 +733,19 @@ export default function AdminProducts() {
                           : "Ready-to-wear"}
                       </span>
 
-                      <span
-                        style={{
-                          ...styles.badge,
-                          ...(Number(product.stock_quantity || 0) > 0
-                            ? styles.badgeGood
-                            : styles.badgeBad),
-                        }}
-                      >
-                        {Number(product.stock_quantity || 0) > 0
-                          ? `Stock: ${Number(product.stock_quantity)}`
-                          : "Out of stock"}
-                      </span>
+                      {(() => {
+                        const stockBadge = getStockBadge(product);
+                        return (
+                          <span
+                            style={{
+                              ...styles.badge,
+                              ...styles[stockBadge.variant],
+                            }}
+                          >
+                            {stockBadge.label}
+                          </span>
+                        );
+                      })()}
                     </div>
                   </div>
                 </div>
@@ -1267,6 +1282,10 @@ const styles = {
   badgeBad: {
     background: "#fbeaea",
     color: "#b52a2a",
+  },
+  badgeWarning: {
+    background: "#fdf3e0",
+    color: "#b07d2a",
   },
   badgeNeutral: {
     background: "#111",
