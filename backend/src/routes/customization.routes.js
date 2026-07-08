@@ -16,6 +16,7 @@ router.get("/products", async (req, res) => {
         category,
         target_group,
         base_price,
+        stock_quantity,
         image_url,
         is_customizable,
         customization_extra_price,
@@ -54,13 +55,14 @@ router.get("/products/:productId", async (req, res) => {
 
     const productResult = await pool.query(
       `
-      SELECT 
+      SELECT
         id,
         name,
         description,
         category,
         target_group,
         base_price,
+        stock_quantity,
         image_url,
         is_customizable,
         customization_extra_price,
