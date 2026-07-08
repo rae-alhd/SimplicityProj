@@ -325,20 +325,73 @@ router.patch("/:id/status", authMiddleware, adminOnly, async (req, res) => {
     });
   }
 
+  const client = await pool.connect();
+
   try {
-    const result = await pool.query(
+    await client.query("BEGIN");
+
+    // Lock the order row so a concurrent status change can't race the
+    // stock_restored check below.
+    const orderResult = await client.query(
+      `SELECT id, status, stock_restored FROM orders WHERE id = $1 FOR UPDATE`,
+      [orderId]
+    );
+
+    if (orderResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Order not found." });
+    }
+
+    const currentOrder = orderResult.rows[0];
+
+    const updateResult = await client.query(
       `UPDATE orders SET status = $1 WHERE id = $2 RETURNING *`,
       [status, orderId]
     );
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Order not found." });
+    let order = updateResult.rows[0];
+
+    // Restock only on the transition into cancelled, and only once ever
+    // for this order — reverting to another status and cancelling again
+    // must not restore stock a second time.
+    if (status === "cancelled" && !currentOrder.stock_restored) {
+      const itemsResult = await client.query(
+        `SELECT product_id, quantity FROM order_items WHERE order_id = $1`,
+        [orderId]
+      );
+
+      const quantityByProduct = new Map();
+      for (const item of itemsResult.rows) {
+        const current = quantityByProduct.get(item.product_id) || 0;
+        quantityByProduct.set(
+          item.product_id,
+          current + Number(item.quantity || 0)
+        );
+      }
+
+      for (const [productId, restoredQuantity] of quantityByProduct.entries()) {
+        await client.query(
+          `UPDATE products SET stock_quantity = stock_quantity + $1 WHERE id = $2`,
+          [restoredQuantity, productId]
+        );
+      }
+
+      const flagResult = await client.query(
+        `UPDATE orders SET stock_restored = true WHERE id = $1 RETURNING *`,
+        [orderId]
+      );
+      order = flagResult.rows[0];
     }
 
-    res.json({ message: "Order status updated.", order: result.rows[0] });
+    await client.query("COMMIT");
+
+    res.json({ message: "Order status updated.", order });
   } catch (err) {
+    await client.query("ROLLBACK");
     console.error("Update order status error:", err);
     res.status(500).json({ error: "Failed to update order status." });
+  } finally {
+    client.release();
   }
 });
 
