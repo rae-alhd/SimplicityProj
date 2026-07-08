@@ -696,9 +696,42 @@ export default function AdminProducts() {
                       #{product.id} · {product.category || "No category"} ·{" "}
                       {product.target_group || "No target"}
                     </p>
-                    {product.is_customizable && (
-                      <span style={styles.customBadge}>Customizable</span>
-                    )}
+                    <div style={styles.badgeRow}>
+                      <span
+                        style={{
+                          ...styles.badge,
+                          ...(product.is_active !== false
+                            ? styles.badgeGood
+                            : styles.badgeBad),
+                        }}
+                      >
+                        {product.is_active !== false ? "Active" : "Inactive"}
+                      </span>
+
+                      <span
+                        style={{
+                          ...styles.badge,
+                          ...styles.badgeNeutral,
+                        }}
+                      >
+                        {product.is_customizable
+                          ? "Customizable"
+                          : "Ready-to-wear"}
+                      </span>
+
+                      <span
+                        style={{
+                          ...styles.badge,
+                          ...(Number(product.stock_quantity || 0) > 0
+                            ? styles.badgeGood
+                            : styles.badgeBad),
+                        }}
+                      >
+                        {Number(product.stock_quantity || 0) > 0
+                          ? `Stock: ${Number(product.stock_quantity)}`
+                          : "Out of stock"}
+                      </span>
+                    </div>
                   </div>
                 </div>
 
@@ -1214,14 +1247,30 @@ const styles = {
     margin: "5px 0",
     fontSize: "12px",
   },
-  customBadge: {
+  badgeRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "6px",
+    marginTop: "6px",
+  },
+  badge: {
     display: "inline-block",
-    background: "#111",
-    color: "#fff",
     padding: "3px 7px",
     fontSize: "9px",
-    letterSpacing: "0.12em",
+    letterSpacing: "0.1em",
     textTransform: "uppercase",
+  },
+  badgeGood: {
+    background: "#eaf5ec",
+    color: "#1a7a45",
+  },
+  badgeBad: {
+    background: "#fbeaea",
+    color: "#b52a2a",
+  },
+  badgeNeutral: {
+    background: "#111",
+    color: "#fff",
   },
   productActions: {
     textAlign: "right",
