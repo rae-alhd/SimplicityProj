@@ -30,14 +30,14 @@ function productMatchesFilter(product, filterKey) {
   }
 }
 
-function getStockBadge(product) {
+function getStockBadge(product, threshold) {
   const stockQuantity = Number(product.stock_quantity || 0);
 
   if (stockQuantity <= 0) {
     return { label: "Out of stock", variant: "badgeBad" };
   }
 
-  if (stockQuantity <= 5) {
+  if (stockQuantity <= threshold) {
     return { label: `Low stock: ${stockQuantity}`, variant: "badgeWarning" };
   }
 
@@ -60,6 +60,10 @@ export default function AdminProducts() {
   const [editingProduct, setEditingProduct] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [productFilter, setProductFilter] = useState("all");
+
+  const [lowStockThreshold, setLowStockThreshold] = useState(5);
+  const [thresholdInput, setThresholdInput] = useState("5");
+  const [thresholdSaving, setThresholdSaving] = useState(false);
 
   const [newProduct, setNewProduct] = useState({
     name: "",
@@ -96,6 +100,65 @@ export default function AdminProducts() {
       console.error("Error fetching products:", err);
     } finally {
       setLoadingProducts(false);
+    }
+  };
+
+  const fetchStoreSettings = async () => {
+    try {
+      const res = await fetch("http://localhost:5000/api/admin/settings", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!res.ok) return;
+
+      const data = await res.json();
+      const threshold = Number(data.low_stock_threshold);
+
+      if (Number.isInteger(threshold) && threshold >= 1) {
+        setLowStockThreshold(threshold);
+        setThresholdInput(String(threshold));
+      }
+    } catch (err) {
+      console.error("Error fetching store settings:", err);
+    }
+  };
+
+  const handleSaveThreshold = async () => {
+    const parsedThreshold = Number(thresholdInput);
+
+    if (!Number.isInteger(parsedThreshold) || parsedThreshold < 1) {
+      alert("Low stock alert must be a whole number of 1 or more.");
+      return;
+    }
+
+    try {
+      setThresholdSaving(true);
+
+      const res = await fetch("http://localhost:5000/api/admin/settings", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ low_stock_threshold: parsedThreshold }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.error || "Could not save low stock alert.");
+        return;
+      }
+
+      setLowStockThreshold(Number(data.low_stock_threshold));
+      setThresholdInput(String(data.low_stock_threshold));
+    } catch (err) {
+      console.error("Error saving store settings:", err);
+      alert("Something went wrong while saving the low stock alert.");
+    } finally {
+      setThresholdSaving(false);
     }
   };
 
@@ -486,6 +549,7 @@ export default function AdminProducts() {
       return;
     }
     fetchProducts();
+    fetchStoreSettings();
   }, [token, navigate]);
 
   useEffect(() => {
@@ -684,6 +748,28 @@ export default function AdminProducts() {
             ))}
           </div>
 
+          <div style={styles.thresholdRow}>
+            <label style={styles.thresholdLabel} htmlFor="low-stock-threshold">
+              Low stock alert at
+            </label>
+            <input
+              id="low-stock-threshold"
+              type="number"
+              min="1"
+              step="1"
+              value={thresholdInput}
+              onChange={(e) => setThresholdInput(e.target.value)}
+              style={styles.thresholdInput}
+            />
+            <button
+              onClick={handleSaveThreshold}
+              disabled={thresholdSaving}
+              style={styles.editBtn}
+            >
+              {thresholdSaving ? "Saving..." : "Save"}
+            </button>
+          </div>
+
           {!loadingProducts && visibleProducts.length === 0 && (
             <p style={styles.muted}>No products match your search.</p>
           )}
@@ -734,7 +820,7 @@ export default function AdminProducts() {
                       </span>
 
                       {(() => {
-                        const stockBadge = getStockBadge(product);
+                        const stockBadge = getStockBadge(product, lowStockThreshold);
                         return (
                           <span
                             style={{
@@ -1172,6 +1258,27 @@ const styles = {
     background: "#111",
     color: "#fff",
     borderColor: "#111",
+  },
+  thresholdRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    marginBottom: "18px",
+    paddingBottom: "18px",
+    borderBottom: "1px solid #eee",
+  },
+  thresholdLabel: {
+    fontSize: "12px",
+    color: "#888",
+    fontFamily: "Georgia, serif",
+  },
+  thresholdInput: {
+    width: "70px",
+    padding: "8px 10px",
+    border: "1px solid #ddd",
+    fontFamily: "Georgia, serif",
+    fontSize: "14px",
+    background: "#fff",
   },
   sectionHeader: {
     display: "flex",
