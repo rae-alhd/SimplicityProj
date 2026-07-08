@@ -10,7 +10,7 @@ const STATUS_STYLES = {
   cancelled: { background: "#fdf2f2", color: "#b52a2a", border: "1px solid #f0b3b3" },
 };
 
-function OrderCard({ order, onStatusChange }) {
+function OrderCard({ order, onStatusChange, productImageMap }) {
   const [status, setStatus]     = useState(order.status || "pending");
   const [saving, setSaving]     = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -129,9 +129,25 @@ function OrderCard({ order, onStatusChange }) {
                 <span style={{ textAlign: "right" }}>Unit Price</span>
                 <span style={{ textAlign: "right" }}>Subtotal</span>
               </div>
-              {items.map((item, idx) => (
+              {items.map((item, idx) => {
+                const productImage = productImageMap?.[item.product_id];
+
+                return (
   <div key={idx} style={{ ...s.itemRow, ...(idx % 2 === 0 ? s.itemRowAlt : {}) }}>
-    <div>
+    <div style={s.itemProductCell}>
+      <div style={s.itemThumbWrap}>
+        {productImage ? (
+          <img
+            src={productImage}
+            alt={item.product_name || "Product"}
+            style={s.itemThumb}
+          />
+        ) : (
+          <span style={s.itemThumbPlaceholder}>No Image</span>
+        )}
+      </div>
+
+      <div>
       <span style={s.itemName}>{item.product_name || "—"}</span>
 
       {item.is_customized && (
@@ -180,6 +196,7 @@ function OrderCard({ order, onStatusChange }) {
           )}
         </div>
       )}
+      </div>
     </div>
 
     <span style={s.itemCell}>{item.size || "—"}</span>
@@ -192,7 +209,8 @@ function OrderCard({ order, onStatusChange }) {
       ₺{(Number(item.unit_price || 0) * item.quantity).toLocaleString("tr-TR", { minimumFractionDigits: 2 })}
     </span>
   </div>
-))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -241,6 +259,7 @@ export default function AdminOrders() {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState("");
   const [filter, setFilter]   = useState("all");
+  const [productImageMap, setProductImageMap] = useState({});
   const navigate              = useNavigate();
   const token                 = localStorage.getItem("token");
 
@@ -259,6 +278,23 @@ export default function AdminOrders() {
       })
       .catch((err) => { setError(err.message); setLoading(false); });
   }, [token, navigate]);
+
+  // Demo/frontend-only lookup: resolves each order item's *current* product
+  // image by product_id. order_items has no image snapshot, so this can show
+  // a different image than what the customer actually saw at checkout time.
+  useEffect(() => {
+    fetch("http://localhost:5000/api/products")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data) => {
+        const list = Array.isArray(data) ? data : [];
+        const map = {};
+        list.forEach((p) => {
+          map[p.id] = p.main_image_url || p.image_url || null;
+        });
+        setProductImageMap(map);
+      })
+      .catch((err) => console.error("Fetch products error:", err));
+  }, []);
 
   const handleStatusChange = (id, newStatus) => {
     setOrders((prev) =>
@@ -334,6 +370,7 @@ export default function AdminOrders() {
                 key={order.id}
                 order={order}
                 onStatusChange={handleStatusChange}
+                productImageMap={productImageMap}
               />
             ))}
           </div>
@@ -625,12 +662,42 @@ const s = {
     borderTop: "1px solid #f5f2ee",
   },
   itemRowAlt: { background: "#fdfcfb" },
+  itemProductCell: {
+    display: "flex",
+    gap: "10px",
+    alignItems: "flex-start",
+  },
+  itemThumbWrap: {
+    width: "40px",
+    height: "40px",
+    minWidth: "40px",
+    borderRadius: "6px",
+    overflow: "hidden",
+    background: "#f2f0eb",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    border: "1px solid #eee4d8",
+  },
+  itemThumb: {
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+  },
+  itemThumbPlaceholder: {
+    fontSize: "0.48rem",
+    letterSpacing: "0.04em",
+    textTransform: "uppercase",
+    color: "#b0a898",
+    textAlign: "center",
+    fontFamily: "sans-serif",
+  },
   itemName: {
     fontSize: "0.82rem",
     color: "#1a1a1a",
     letterSpacing: "0.02em",
   },
-  
+
   customDetails: {
     marginTop: "7px",
     padding: "8px 10px",
