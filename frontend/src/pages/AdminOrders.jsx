@@ -19,6 +19,16 @@ function OrderCard({ order, onStatusChange }) {
 
   const handleStatusChange = async (e) => {
     const newStatus = e.target.value;
+
+    if (newStatus === "cancelled") {
+      const confirmed = window.confirm(
+        "Cancel this order? Product stock will be restored if it has not been restored already."
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
+
     setSaving(true);
     setSaveError("");
     try {
