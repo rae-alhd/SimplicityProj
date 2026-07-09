@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import AdminNav from "../components/AdminNav";
 
 const PRODUCT_FILTERS = [
   { key: "all", label: "All" },
@@ -582,8 +583,10 @@ export default function AdminProducts() {
     : filterFilteredProducts;
 
   return (
-    <div style={styles.page}>
-      <div style={styles.container}>
+    <>
+      <AdminNav />
+      <div style={styles.page}>
+        <div style={styles.container}>
         <header style={styles.header}>
           <div>
             <p style={styles.eyebrow}>Simplicity Admin</p>
@@ -592,10 +595,6 @@ export default function AdminProducts() {
               Manage products, images, colors, and catalog visibility.
             </p>
           </div>
-
-          <button onClick={() => navigate("/dashboard")} style={styles.backBtn}>
-            Back to Dashboard
-          </button>
         </header>
 
         <section style={styles.formPanel}>
@@ -1168,7 +1167,8 @@ export default function AdminProducts() {
           </section>
         )}
       </div>
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -1207,15 +1207,6 @@ const styles = {
   subtitle: {
     color: "#888",
     margin: 0,
-  },
-  backBtn: {
-    padding: "12px 18px",
-    border: "1px solid #111",
-    background: "#fff",
-    cursor: "pointer",
-    letterSpacing: "0.12em",
-    textTransform: "uppercase",
-    fontFamily: "Georgia, serif",
   },
   formPanel: {
     background: "#fff",
