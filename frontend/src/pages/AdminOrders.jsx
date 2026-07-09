@@ -32,7 +32,15 @@ function orderMatchesSearch(order, normalizedTerm) {
   );
 }
 
-function OrderCard({ order, onStatusChange, productImageMap }) {
+function OrderCard({
+  order,
+  onStatusChange,
+  productImageMap,
+  noteDraft,
+  onNoteDraftChange,
+  onSaveNote,
+  savingNote,
+}) {
   const [status, setStatus]     = useState(order.status || "pending");
   const [saving, setSaving]     = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -131,6 +139,30 @@ function OrderCard({ order, onStatusChange, productImageMap }) {
           <span style={s.notesValue}>{order.notes}</span>
         </div>
       )}
+
+      {/* ── Admin Notes (Internal) ── */}
+      <div style={s.adminNotesSection}>
+        <label style={s.infoLabel} htmlFor={`admin-notes-${order.id}`}>
+          Admin Notes (Internal)
+        </label>
+        <textarea
+          id={`admin-notes-${order.id}`}
+          value={noteDraft}
+          onChange={(e) => onNoteDraftChange(order.id, e.target.value)}
+          placeholder="Internal notes for this order (not visible to the customer)..."
+          style={s.adminNotesTextarea}
+        />
+        <button
+          onClick={() => onSaveNote(order.id)}
+          disabled={savingNote}
+          style={{
+            ...s.saveNoteBtn,
+            ...(savingNote ? s.saveNoteBtnDisabled : {}),
+          }}
+        >
+          {savingNote ? "Saving..." : "Save Note"}
+        </button>
+      </div>
 
       {/* ── Items Toggle ── */}
       {items.length > 0 && (
@@ -283,6 +315,8 @@ export default function AdminOrders() {
   const [filter, setFilter]   = useState("all");
   const [searchTerm, setSearchTerm] = useState("");
   const [productImageMap, setProductImageMap] = useState({});
+  const [adminNoteDrafts, setAdminNoteDrafts] = useState({});
+  const [savingNoteId, setSavingNoteId] = useState(null);
   const navigate              = useNavigate();
   const token                 = localStorage.getItem("token");
 
@@ -296,7 +330,14 @@ export default function AdminOrders() {
         return r.json();
       })
       .then((data) => {
-        setOrders(Array.isArray(data) ? data : data.orders || []);
+        const list = Array.isArray(data) ? data : data.orders || [];
+        setOrders(list);
+        setAdminNoteDrafts(
+          list.reduce((acc, o) => {
+            acc[o.id] = o.admin_notes || "";
+            return acc;
+          }, {})
+        );
         setLoading(false);
       })
       .catch((err) => { setError(err.message); setLoading(false); });
@@ -323,6 +364,49 @@ export default function AdminOrders() {
     setOrders((prev) =>
       prev.map((o) => (o.id === id ? { ...o, status: newStatus } : o))
     );
+  };
+
+  const handleNoteDraftChange = (orderId, value) => {
+    setAdminNoteDrafts((prev) => ({ ...prev, [orderId]: value }));
+  };
+
+  const handleSaveNote = async (orderId) => {
+    try {
+      setSavingNoteId(orderId);
+
+      const res = await fetch(
+        `http://localhost:5000/api/orders/${orderId}/admin-notes`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ admin_notes: adminNoteDrafts[orderId] ?? "" }),
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.error || "Could not save admin notes.");
+        return;
+      }
+
+      const savedNotes = data.order?.admin_notes ?? "";
+
+      setOrders((prev) =>
+        prev.map((o) =>
+          o.id === orderId ? { ...o, admin_notes: savedNotes } : o
+        )
+      );
+      setAdminNoteDrafts((prev) => ({ ...prev, [orderId]: savedNotes }));
+    } catch (err) {
+      console.error("Save admin notes error:", err);
+      alert("Something went wrong while saving admin notes.");
+    } finally {
+      setSavingNoteId(null);
+    }
   };
 
   const statusFiltered = filter === "all"
@@ -417,6 +501,10 @@ export default function AdminOrders() {
                 order={order}
                 onStatusChange={handleStatusChange}
                 productImageMap={productImageMap}
+                noteDraft={adminNoteDrafts[order.id] ?? ""}
+                onNoteDraftChange={handleNoteDraftChange}
+                onSaveNote={handleSaveNote}
+                savingNote={savingNoteId === order.id}
               />
             ))}
           </div>
@@ -688,6 +776,43 @@ const s = {
     fontStyle: "italic",
     fontFamily: "sans-serif",
     lineHeight: "1.5",
+  },
+  adminNotesSection: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "6px",
+    marginBottom: "16px",
+    paddingTop: "12px",
+    borderTop: "1px solid #f0ece6",
+  },
+  adminNotesTextarea: {
+    width: "100%",
+    minHeight: "60px",
+    padding: "10px 12px",
+    border: "1px solid #ddd8d0",
+    background: "#faf9f7",
+    fontFamily: "'Georgia', serif",
+    fontSize: "0.82rem",
+    color: "#1a1a1a",
+    outline: "none",
+    boxSizing: "border-box",
+    resize: "vertical",
+  },
+  saveNoteBtn: {
+    alignSelf: "flex-start",
+    padding: "8px 16px",
+    border: "1px solid #111",
+    background: "#fff",
+    color: "#111",
+    cursor: "pointer",
+    fontFamily: "'Georgia', serif",
+    fontSize: "0.72rem",
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+  },
+  saveNoteBtnDisabled: {
+    opacity: 0.5,
+    cursor: "not-allowed",
   },
 
   // Items
