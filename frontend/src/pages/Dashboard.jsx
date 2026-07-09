@@ -486,15 +486,6 @@ const styles = {
     color: "#888",
     margin: 0,
   },
-  logoutBtn: {
-    padding: "12px 18px",
-    border: "1px solid #111",
-    background: "#fff",
-    cursor: "pointer",
-    letterSpacing: "0.12em",
-    textTransform: "uppercase",
-    fontFamily: "Georgia, serif",
-  },
   statsGrid: {
     display: "grid",
     gridTemplateColumns: "repeat(4, 1fr)",
