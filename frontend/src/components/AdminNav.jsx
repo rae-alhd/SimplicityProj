@@ -18,7 +18,7 @@ export default function AdminNav({ onLogout }) {
     if (onLogout) {
       onLogout();
     }
-    navigate("/login");
+    window.location.href = "/login";
   };
 
   return (
