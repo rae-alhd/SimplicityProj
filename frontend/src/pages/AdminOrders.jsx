@@ -32,6 +32,22 @@ function orderMatchesSearch(order, normalizedTerm) {
   );
 }
 
+function capitalizeStatus(status) {
+  if (!status) return "—";
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function formatTimelineDate(dateString) {
+  if (!dateString) return "—";
+  return new Date(dateString).toLocaleString("tr-TR", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function OrderCard({
   order,
   onStatusChange,
@@ -94,6 +110,9 @@ function OrderCard({
     : "—";
 
   const items = Array.isArray(order.items) ? order.items : [];
+  const statusHistory = Array.isArray(order.status_history)
+    ? order.status_history
+    : [];
 
   return (
     <div style={s.card}>
@@ -162,6 +181,41 @@ function OrderCard({
         >
           {savingNote ? "Saving..." : "Save Note"}
         </button>
+      </div>
+
+      {/* ── Status Timeline ── */}
+      <div style={s.timelineSection}>
+        <span style={s.infoLabel}>Status Timeline</span>
+        <div style={s.timelineList}>
+          <div style={s.timelineRow}>
+            <span style={s.timelineDot} />
+            <div style={s.timelineContent}>
+              <span style={s.timelineText}>Order placed — Pending</span>
+              <span style={s.timelineDate}>
+                {formatTimelineDate(order.created_at)}
+              </span>
+            </div>
+          </div>
+
+          {statusHistory.length === 0 ? (
+            <p style={s.timelineEmpty}>No status changes yet.</p>
+          ) : (
+            statusHistory.map((entry) => (
+              <div key={entry.id} style={s.timelineRow}>
+                <span style={s.timelineDot} />
+                <div style={s.timelineContent}>
+                  <span style={s.timelineText}>
+                    {capitalizeStatus(entry.old_status)} →{" "}
+                    {capitalizeStatus(entry.new_status)}
+                  </span>
+                  <span style={s.timelineDate}>
+                    {formatTimelineDate(entry.created_at)}
+                  </span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
       </div>
 
       {/* ── Items Toggle ── */}
@@ -813,6 +867,56 @@ const s = {
   saveNoteBtnDisabled: {
     opacity: 0.5,
     cursor: "not-allowed",
+  },
+  timelineSection: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "6px",
+    marginBottom: "16px",
+    paddingTop: "12px",
+    borderTop: "1px solid #f0ece6",
+  },
+  timelineList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "8px",
+    marginTop: "4px",
+  },
+  timelineRow: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: "10px",
+  },
+  timelineDot: {
+    width: "7px",
+    height: "7px",
+    borderRadius: "50%",
+    background: "#b0a898",
+    marginTop: "5px",
+    flexShrink: 0,
+  },
+  timelineContent: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "2px",
+  },
+  timelineText: {
+    fontSize: "0.8rem",
+    color: "#1a1a1a",
+    fontFamily: "sans-serif",
+  },
+  timelineDate: {
+    fontSize: "0.68rem",
+    color: "#aaa",
+    fontFamily: "sans-serif",
+    letterSpacing: "0.04em",
+  },
+  timelineEmpty: {
+    fontSize: "0.75rem",
+    color: "#aaa",
+    fontFamily: "sans-serif",
+    fontStyle: "italic",
+    margin: 0,
   },
 
   // Items
