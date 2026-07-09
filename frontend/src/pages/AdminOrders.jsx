@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import AdminNav from "../components/AdminNav";
 
 const STATUS_OPTIONS = ["pending", "confirmed", "delivered", "cancelled"];
 
@@ -340,7 +341,9 @@ export default function AdminOrders() {
   }, {});
 
   return (
-    <div style={s.page}>
+    <>
+      <AdminNav />
+      <div style={s.page}>
       <div style={s.container}>
 
         {/* ── Page Header ── */}
@@ -419,7 +422,8 @@ export default function AdminOrders() {
           </div>
         )}
       </div>
-    </div>
+      </div>
+    </>
   );
 }
 
