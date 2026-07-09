@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import AdminNav from "../components/AdminNav";
 
 const API_BASE = "http://localhost:5000/api";
 
@@ -398,14 +399,10 @@ export default function AdminCustomization() {
   }
 
   return (
-    <div style={styles.page}>
+    <>
+      <AdminNav />
+      <div style={styles.page}>
       <div style={styles.container}>
-        <div style={styles.topBar}>
-          <button onClick={() => navigate("/dashboard")} style={styles.backBtn}>
-            Back to Dashboard
-          </button>
-        </div>
-
         <header style={styles.header}>
           <p style={styles.eyebrow}>Admin Studio</p>
           <h1 style={styles.title}>Customization Manager</h1>
@@ -824,7 +821,8 @@ export default function AdminCustomization() {
           </div>
         )}
       </div>
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -839,18 +837,6 @@ const styles = {
   container: {
     maxWidth: "1100px",
     margin: "0 auto",
-  },
-  topBar: {
-    marginBottom: "20px",
-  },
-  backBtn: {
-    padding: "12px 18px",
-    border: "1px solid #111",
-    background: "#fff",
-    cursor: "pointer",
-    letterSpacing: "0.12em",
-    textTransform: "uppercase",
-    fontFamily: "Georgia, serif",
   },
   header: {
     textAlign: "center",
