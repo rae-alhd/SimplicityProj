@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
+import API_BASE from "../config/api";
 
 const gold = "#C9A84C";
 const offWhite = "#F7F5F0";
@@ -55,7 +56,7 @@ export default function Login({ setUser }) {
 
     setLoading(true);
     try {
-      const res = await fetch("http://localhost:5000/api/auth/login", {
+      const res = await fetch(`${API_BASE}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: email.trim(), password }),
@@ -70,7 +71,7 @@ export default function Login({ setUser }) {
 
       localStorage.setItem("token", data.token);
 
-      const meRes = await fetch("http://localhost:5000/api/auth/me", {
+      const meRes = await fetch(`${API_BASE}/auth/me`, {
         headers: { Authorization: `Bearer ${data.token}` },
       });
       const meData = await meRes.json();

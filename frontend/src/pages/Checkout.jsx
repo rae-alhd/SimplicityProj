@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import API_BASE from "../config/api";
 
 export default function Checkout({ fetchCart }) {
   const navigate = useNavigate();
@@ -27,7 +28,7 @@ export default function Checkout({ fetchCart }) {
   // Fetch cart items
   useEffect(() => {
     if (!token) return;
-    fetch("http://localhost:5000/api/cart", {
+    fetch(`${API_BASE}/cart`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((r) => r.json())
@@ -67,7 +68,7 @@ export default function Checkout({ fetchCart }) {
     setSubmitting(true);
 
     try {
-      const response = await fetch("http://localhost:5000/api/orders", {
+      const response = await fetch(`${API_BASE}/orders`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

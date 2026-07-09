@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import AdminNav from "../components/AdminNav";
+import API_BASE from "../config/api";
 
 const STATUS_OPTIONS = ["pending", "confirmed", "delivered", "cancelled"];
 
@@ -78,7 +79,7 @@ function OrderCard({
     setSaving(true);
     setSaveError("");
     try {
-      const res = await fetch(`http://localhost:5000/api/orders/${order.id}/status`, {
+      const res = await fetch(`${API_BASE}/orders/${order.id}/status`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
@@ -376,7 +377,7 @@ export default function AdminOrders() {
 
   useEffect(() => {
     if (!token) { navigate("/login"); return; }
-    fetch("http://localhost:5000/api/orders", {
+    fetch(`${API_BASE}/orders`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((r) => {
@@ -401,7 +402,7 @@ export default function AdminOrders() {
   // image by product_id. order_items has no image snapshot, so this can show
   // a different image than what the customer actually saw at checkout time.
   useEffect(() => {
-    fetch("http://localhost:5000/api/products")
+    fetch(`${API_BASE}/products`)
       .then((r) => (r.ok ? r.json() : []))
       .then((data) => {
         const list = Array.isArray(data) ? data : [];
@@ -429,7 +430,7 @@ export default function AdminOrders() {
       setSavingNoteId(orderId);
 
       const res = await fetch(
-        `http://localhost:5000/api/orders/${orderId}/admin-notes`,
+        `${API_BASE}/orders/${orderId}/admin-notes`,
         {
           method: "PATCH",
           headers: {

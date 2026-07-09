@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import AdminNav from "../components/AdminNav";
+import API_BASE from "../config/api";
 
 function Dashboard({ user, setUser }) {
   const navigate = useNavigate();
@@ -16,7 +17,7 @@ function Dashboard({ user, setUser }) {
   const fetchProducts = async () => {
     try {
       setLoadingProducts(true);
-      const res = await fetch("http://localhost:5000/api/products");
+      const res = await fetch(`${API_BASE}/products`);
       const data = await res.json();
       setProducts(Array.isArray(data) ? data : []);
     } catch (err) {
@@ -32,7 +33,7 @@ function Dashboard({ user, setUser }) {
 
       if (!token) return;
 
-      const res = await fetch("http://localhost:5000/api/orders", {
+      const res = await fetch(`${API_BASE}/orders`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -56,7 +57,7 @@ function Dashboard({ user, setUser }) {
     try {
       if (!token) return;
 
-      const res = await fetch("http://localhost:5000/api/admin/settings", {
+      const res = await fetch(`${API_BASE}/admin/settings`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },

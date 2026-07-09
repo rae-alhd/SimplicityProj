@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import API_BASE from "../config/api";
 
 const gold = "#C9A84C";
 const offWhite = "#F7F5F0";
@@ -573,14 +574,14 @@ export default function Home() {
   const [settings, setSettings] = useState({});
 
   useEffect(() => {
-    fetch("http://localhost:5000/api/products")
+    fetch(`${API_BASE}/products`)
       .then((res) => res.json())
       .then((data) => setProducts(Array.isArray(data) ? data : []))
       .catch((err) => console.error("Error fetching products:", err));
   }, []);
 
   useEffect(() => {
-    fetch("http://localhost:5000/api/homepage-settings")
+    fetch(`${API_BASE}/homepage-settings`)
       .then((res) => res.json())
       .then((data) => setSettings(data || {}))
       .catch((err) => console.error("Error fetching homepage settings:", err));

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import AdminNav from "../components/AdminNav";
+import API_BASE from "../config/api";
 
 export default function AdminHomepage() {
   const navigate = useNavigate();
@@ -34,7 +35,7 @@ export default function AdminHomepage() {
   const fetchHomepageSettings = async () => {
     try {
       setLoadingHomepageSettings(true);
-      const res = await fetch("http://localhost:5000/api/homepage-settings");
+      const res = await fetch(`${API_BASE}/homepage-settings`);
       const data = await res.json();
       setHomepageSettings({
         hero_title: data.hero_title || "",
@@ -63,7 +64,7 @@ export default function AdminHomepage() {
   const handleSaveHomepageSettings = async () => {
     try {
       const res = await fetch(
-        "http://localhost:5000/api/admin/homepage-settings",
+        `${API_BASE}/admin/homepage-settings`,
         {
           method: "PUT",
           headers: {
@@ -96,7 +97,7 @@ export default function AdminHomepage() {
       formData.append("image", heroImageFile);
 
       const res = await fetch(
-        "http://localhost:5000/api/admin/homepage-settings/hero-image",
+        `${API_BASE}/admin/homepage-settings/hero-image`,
         {
           method: "POST",
           headers: {
@@ -134,7 +135,7 @@ export default function AdminHomepage() {
       formData.append("image", file);
 
       const res = await fetch(
-        `http://localhost:5000/api/admin/homepage-settings/card-image/${cardKey}`,
+        `${API_BASE}/admin/homepage-settings/card-image/${cardKey}`,
         {
           method: "POST",
           headers: {

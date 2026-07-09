@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import API_BASE from "../config/api";
 
 /* ─────────────────────────────────────────────
    STYLES
@@ -400,7 +401,7 @@ export default function ProductDetails({ fetchCart }) {
   useEffect(() => {
     setLoading(true);
     setError(null);
-    fetch("http://localhost:5000/api/products")
+    fetch(`${API_BASE}/products`)
       .then((res) => {
         if (!res.ok) throw new Error(`Server error: ${res.status}`);
         return res.json();
@@ -442,7 +443,7 @@ export default function ProductDetails({ fetchCart }) {
     setColors([]);
     setSelectedColor(null);
 
-    fetch(`http://localhost:5000/api/products/${id}/colors`)
+    fetch(`${API_BASE}/products/${id}/colors`)
       .then((res) => {
         if (!res.ok) throw new Error(`Server error: ${res.status}`);
         return res.json();
@@ -479,7 +480,7 @@ export default function ProductDetails({ fetchCart }) {
         return;
       }
   
-      const res = await fetch("http://localhost:5000/api/cart", {
+      const res = await fetch(`${API_BASE}/cart`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

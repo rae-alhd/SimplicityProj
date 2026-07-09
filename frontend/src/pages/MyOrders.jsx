@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
+import API_BASE from "../config/api";
 
 const STATUS_CONFIG = {
   pending:   { label: "Pending",   bg: "#fff8ec", color: "#b07d2a", border: "#f0d9a0", dot: "#e6a820" },
@@ -200,7 +201,7 @@ export default function MyOrders() {
   useEffect(() => {
     if (!token) { navigate("/login"); return; }
 
-    fetch("http://localhost:5000/api/orders/my", {
+    fetch(`${API_BASE}/orders/my`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then(r => {

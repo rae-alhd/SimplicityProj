@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import AdminNav from "../components/AdminNav";
+import API_BASE from "../config/api";
 
 const PRODUCT_FILTERS = [
   { key: "all", label: "All" },
@@ -94,7 +95,7 @@ export default function AdminProducts() {
   const fetchProducts = async () => {
     try {
       setLoadingProducts(true);
-      const res = await fetch("http://localhost:5000/api/products");
+      const res = await fetch(`${API_BASE}/products`);
       const data = await res.json();
       setProducts(Array.isArray(data) ? data : []);
     } catch (err) {
@@ -106,7 +107,7 @@ export default function AdminProducts() {
 
   const fetchStoreSettings = async () => {
     try {
-      const res = await fetch("http://localhost:5000/api/admin/settings", {
+      const res = await fetch(`${API_BASE}/admin/settings`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -137,7 +138,7 @@ export default function AdminProducts() {
     try {
       setThresholdSaving(true);
 
-      const res = await fetch("http://localhost:5000/api/admin/settings", {
+      const res = await fetch(`${API_BASE}/admin/settings`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
@@ -168,7 +169,7 @@ export default function AdminProducts() {
     if (!ok) return;
 
     try {
-      const res = await fetch(`http://localhost:5000/api/products/${id}`, {
+      const res = await fetch(`${API_BASE}/products/${id}`, {
         method: "DELETE",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -187,7 +188,7 @@ export default function AdminProducts() {
   const handleUpdate = async () => {
     try {
       const res = await fetch(
-        `http://localhost:5000/api/products/${editingProduct.id}`,
+        `${API_BASE}/products/${editingProduct.id}`,
         {
           method: "PUT",
           headers: {
@@ -224,7 +225,7 @@ export default function AdminProducts() {
         return;
       }
 
-      const res = await fetch("http://localhost:5000/api/products", {
+      const res = await fetch(`${API_BASE}/products`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -272,7 +273,7 @@ export default function AdminProducts() {
     try {
       setLoadingImages(true);
       const res = await fetch(
-        `http://localhost:5000/api/admin/products/${productId}/images`,
+        `${API_BASE}/admin/products/${productId}/images`,
         {
           headers: {
             Authorization: `Bearer ${token}`,
@@ -291,7 +292,7 @@ export default function AdminProducts() {
   const fetchProductColors = async (productId) => {
     try {
       const res = await fetch(
-        `http://localhost:5000/api/products/${productId}/colors`
+        `${API_BASE}/products/${productId}/colors`
       );
       const data = await res.json();
       setProductColors(Array.isArray(data) ? data : []);
@@ -303,7 +304,7 @@ export default function AdminProducts() {
   const fetchManageColors = async (productId) => {
     try {
       const res = await fetch(
-        `http://localhost:5000/api/admin/customization/${productId}/colors`,
+        `${API_BASE}/admin/customization/${productId}/colors`,
         {
           headers: {
             Authorization: `Bearer ${token}`,
@@ -322,7 +323,7 @@ export default function AdminProducts() {
 
     try {
       const res = await fetch(
-        `http://localhost:5000/api/admin/customization/${editingProduct.id}/colors`,
+        `${API_BASE}/admin/customization/${editingProduct.id}/colors`,
         {
           method: "POST",
           headers: {
@@ -358,7 +359,7 @@ export default function AdminProducts() {
 
     try {
       const res = await fetch(
-        `http://localhost:5000/api/admin/customization/colors/${color.id}`,
+        `${API_BASE}/admin/customization/colors/${color.id}`,
         {
           method: "PATCH",
           headers: {
@@ -391,7 +392,7 @@ export default function AdminProducts() {
   const handleToggleColorActive = async (color) => {
     try {
       const res = await fetch(
-        `http://localhost:5000/api/admin/customization/colors/${color.id}`,
+        `${API_BASE}/admin/customization/colors/${color.id}`,
         {
           method: "PATCH",
           headers: {
@@ -425,7 +426,7 @@ export default function AdminProducts() {
 
     try {
       const res = await fetch(
-        `http://localhost:5000/api/admin/customization/colors/${color.id}`,
+        `${API_BASE}/admin/customization/colors/${color.id}`,
         {
           method: "DELETE",
           headers: {
@@ -460,7 +461,7 @@ export default function AdminProducts() {
       }
 
       const res = await fetch(
-        `http://localhost:5000/api/admin/products/${editingProduct.id}/images`,
+        `${API_BASE}/admin/products/${editingProduct.id}/images`,
         {
           method: "POST",
           headers: {
@@ -490,7 +491,7 @@ export default function AdminProducts() {
   const handleSetMainImage = async (imageId) => {
     try {
       const res = await fetch(
-        `http://localhost:5000/api/admin/products/${editingProduct.id}/images/${imageId}/main`,
+        `${API_BASE}/admin/products/${editingProduct.id}/images/${imageId}/main`,
         {
           method: "PATCH",
           headers: {
@@ -521,7 +522,7 @@ export default function AdminProducts() {
 
     try {
       const res = await fetch(
-        `http://localhost:5000/api/admin/products/${editingProduct.id}/images/${imageId}/deactivate`,
+        `${API_BASE}/admin/products/${editingProduct.id}/images/${imageId}/deactivate`,
         {
           method: "PATCH",
           headers: {

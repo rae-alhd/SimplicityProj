@@ -20,6 +20,7 @@ import AdminCustomization from "./pages/AdminCustomization";
 import AdminHomepage from "./pages/AdminHomepage";
 import AdminProducts from "./pages/AdminProducts";
 import Register from "./pages/Register";
+import API_BASE from "./config/api";
 
 
 function App() {
@@ -31,7 +32,7 @@ function App() {
       const token = localStorage.getItem("token");
       if (!token) return;
   
-      const res = await fetch("http://localhost:5000/api/cart", {
+      const res = await fetch(`${API_BASE}/cart`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -56,7 +57,7 @@ function App() {
     if (token) {
       fetchCart();
   
-      fetch("http://localhost:5000/api/auth/me", {
+      fetch(`${API_BASE}/auth/me`, {
         method: "GET",
         headers: {
           Authorization: `Bearer ${token}`,

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import API_BASE from "../config/api";
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
@@ -489,7 +490,7 @@ function Cart() {
     try {
       const token = localStorage.getItem("token");
   
-      const res = await fetch("http://localhost:5000/api/cart", {
+      const res = await fetch(`${API_BASE}/cart`, {
         headers: { Authorization: `Bearer ${token}` },
       });
   
@@ -519,7 +520,7 @@ function Cart() {
         return;
       }
 
-      await fetch(`http://localhost:5000/api/cart/${id}`, {
+      await fetch(`${API_BASE}/cart/${id}`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
@@ -539,7 +540,7 @@ function Cart() {
     try {
       const token = localStorage.getItem("token");
   
-      await fetch(`http://localhost:5000/api/cart/${id}`, {
+      await fetch(`${API_BASE}/cart/${id}`, {
         method: "DELETE",
         headers: {
           Authorization: `Bearer ${token}`,

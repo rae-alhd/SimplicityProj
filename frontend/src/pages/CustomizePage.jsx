@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import hoodieImg from "../assets/white-hoodie.png";
-
-const API_BASE = "http://localhost:5000/api";
+import API_BASE from "../config/api";
 
 // /api/customization/products and /api/customization/products/:id do not
 // currently select stock_quantity, so this only takes effect once that field
