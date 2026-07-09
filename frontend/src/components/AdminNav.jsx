@@ -9,12 +9,15 @@ const NAV_LINKS = [
   { label: "Storefront", path: "/products" },
 ];
 
-export default function AdminNav() {
+export default function AdminNav({ onLogout }) {
   const navigate = useNavigate();
   const location = useLocation();
 
   const handleLogout = () => {
     localStorage.removeItem("token");
+    if (onLogout) {
+      onLogout();
+    }
     navigate("/login");
   };
 

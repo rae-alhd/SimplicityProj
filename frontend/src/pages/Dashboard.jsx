@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import AdminNav from "../components/AdminNav";
 
 function Dashboard({ user, setUser }) {
   const navigate = useNavigate();
@@ -49,12 +50,6 @@ function Dashboard({ user, setUser }) {
     } finally {
       setLoadingOrders(false);
     }
-  };
-
-  const handleLogout = () => {
-    localStorage.removeItem("token");
-    setUser(null);
-    navigate("/login");
   };
 
   const fetchStoreSettings = async () => {
@@ -200,18 +195,16 @@ function Dashboard({ user, setUser }) {
   }
 
   return (
-    <div style={styles.page}>
-      <div style={styles.container}>
+    <>
+      <AdminNav onLogout={() => setUser(null)} />
+      <div style={styles.page}>
+        <div style={styles.container}>
         <header style={styles.header}>
           <div>
             <p style={styles.eyebrow}>Simplicity Admin</p>
             <h1 style={styles.title}>Dashboard</h1>
             <p style={styles.subtitle}>Welcome back, {user.email}</p>
           </div>
-
-          <button onClick={handleLogout} style={styles.logoutBtn}>
-            Logout
-          </button>
         </header>
 
         <section style={styles.quickActions}>
@@ -438,7 +431,8 @@ function Dashboard({ user, setUser }) {
         </section>
 
       </div>
-    </div>
+      </div>
+    </>
   );
 }
 
