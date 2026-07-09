@@ -16,6 +16,12 @@ const adminHomepageRoutes = require("./routes/admin.homepage.routes");
 const adminSettingsRoutes = require("./routes/admin.settings.routes");
 const app = express();
 
+// Render (and most PaaS hosts) terminate HTTPS at their edge proxy and
+// forward requests over plain HTTP internally. Without this, req.protocol
+// would report "http" even on a live HTTPS request, causing upload routes
+// that build absolute URLs from req.protocol to save broken http:// links.
+app.set("trust proxy", true);
+
 app.use(helmet());
 app.use(cors());
 app.use(morgan("dev"));

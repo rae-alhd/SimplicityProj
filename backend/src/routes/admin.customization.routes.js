@@ -6,6 +6,7 @@ const multer = require("multer");
 const router = express.Router();
 const pool = require("../config/db");
 const { authMiddleware } = require("../middleware/auth.middleware");
+const { getPublicBaseUrl } = require("../utils/publicUrl");
 
 // Admin-only guard
 function adminOnly(req, res, next) {
@@ -709,7 +710,7 @@ router.post(
         return res.status(400).json({ error: "name is required" });
       }
 
-      const baseUrl = process.env.BACKEND_PUBLIC_URL || "http://localhost:5000";
+      const baseUrl = getPublicBaseUrl(req);
       const imageUrl = `${baseUrl}/uploads/designs/${req.file.filename}`;
 
       const result = await pool.query(

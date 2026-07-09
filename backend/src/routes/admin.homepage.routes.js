@@ -6,6 +6,7 @@ const multer = require("multer");
 const router = express.Router();
 const pool = require("../config/db");
 const { authMiddleware, adminOnly } = require("../middleware/auth.middleware");
+const { getPublicBaseUrl } = require("../utils/publicUrl");
 
 const UPLOAD_DIR = path.join(__dirname, "..", "..", "uploads", "homepage");
 
@@ -143,7 +144,7 @@ router.post(
         return res.status(400).json({ error: "image file is required" });
       }
 
-      const baseUrl = process.env.BACKEND_PUBLIC_URL || "http://localhost:5000";
+      const baseUrl = getPublicBaseUrl(req);
       const imageUrl = `${baseUrl}/uploads/homepage/${req.file.filename}`;
 
       const result = await pool.query(
@@ -197,7 +198,7 @@ router.post(
       }
 
       const column = CARD_IMAGE_COLUMNS[req.params.cardKey];
-      const baseUrl = process.env.BACKEND_PUBLIC_URL || "http://localhost:5000";
+      const baseUrl = getPublicBaseUrl(req);
       const imageUrl = `${baseUrl}/uploads/homepage/${req.file.filename}`;
 
       const result = await pool.query(

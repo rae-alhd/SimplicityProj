@@ -6,6 +6,7 @@ const multer = require("multer");
 const router = express.Router();
 const pool = require("../config/db");
 const { authMiddleware, adminOnly } = require("../middleware/auth.middleware");
+const { getPublicBaseUrl } = require("../utils/publicUrl");
 
 router.use(authMiddleware);
 router.use(adminOnly);
@@ -154,7 +155,7 @@ router.post(
       );
       const nextSortOrder = sortOrderResult.rows[0].next_sort_order;
 
-      const baseUrl = process.env.BACKEND_PUBLIC_URL || "http://localhost:5000";
+      const baseUrl = getPublicBaseUrl(req);
       const imageUrl = `${baseUrl}/uploads/products/${req.file.filename}`;
 
       const insertResult = await pool.query(
