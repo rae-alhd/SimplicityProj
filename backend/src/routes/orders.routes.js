@@ -395,4 +395,32 @@ router.patch("/:id/status", authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+/* ─────────────────────────────────────────────
+   PATCH /api/orders/:id/admin-notes
+   Admin only — save internal notes for an order. Separate from the
+   customer's own checkout `notes` field; never touches order status
+   or stock.
+   Body: { admin_notes: "text" }
+───────────────────────────────────────────── */
+router.patch("/:id/admin-notes", authMiddleware, adminOnly, async (req, res) => {
+  const orderId = parseInt(req.params.id);
+  const { admin_notes } = req.body;
+
+  try {
+    const result = await pool.query(
+      `UPDATE orders SET admin_notes = $1 WHERE id = $2 RETURNING *`,
+      [admin_notes ?? null, orderId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Order not found." });
+    }
+
+    res.json({ message: "Admin notes updated", order: result.rows[0] });
+  } catch (err) {
+    console.error("Update admin notes error:", err);
+    res.status(500).json({ error: "Failed to update admin notes." });
+  }
+});
+
 module.exports = router;
