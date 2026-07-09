@@ -297,9 +297,21 @@ router.get("/", authMiddleware, adminOnly, async (req, res) => {
       itemsByOrder[item.order_id].push(item);
     }
 
+    const historyResult = await pool.query(
+      `SELECT * FROM order_status_history WHERE order_id = ANY($1::int[]) ORDER BY created_at ASC`,
+      [orderIds]
+    );
+
+    const historyByOrder = {};
+    for (const entry of historyResult.rows) {
+      if (!historyByOrder[entry.order_id]) historyByOrder[entry.order_id] = [];
+      historyByOrder[entry.order_id].push(entry);
+    }
+
     const ordersWithItems = orders.map((order) => ({
       ...order,
       items: itemsByOrder[order.id] || [],
+      status_history: historyByOrder[order.id] || [],
     }));
 
     res.json(ordersWithItems);
@@ -350,6 +362,16 @@ router.patch("/:id/status", authMiddleware, adminOnly, async (req, res) => {
     );
 
     let order = updateResult.rows[0];
+
+    // Log the transition for the admin-facing status timeline. Skip if the
+    // status didn't actually change (e.g. re-selecting the same value).
+    if (currentOrder.status !== status) {
+      await client.query(
+        `INSERT INTO order_status_history (order_id, old_status, new_status)
+         VALUES ($1, $2, $3)`,
+        [orderId, currentOrder.status, status]
+      );
+    }
 
     // Restock only on the transition into cancelled, and only once ever
     // for this order — reverting to another status and cancelling again
