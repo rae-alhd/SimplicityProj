@@ -253,6 +253,24 @@ const styles = {
   },
 };
 
+// ─── Stock availability helper ─────────────────────────────────────────────────
+// Customers must never see the raw stock_quantity number (business rule).
+// The real configurable threshold (store_settings.low_stock_threshold) lives
+// behind an admin-only endpoint (GET /api/admin/settings), so it isn't
+// reachable from this customer-facing page without adding a new backend
+// route — out of scope for this pass. These thresholds mirror the backend's
+// own default (store_settings.low_stock_threshold defaults to 5).
+const LOW_STOCK_THRESHOLD = 5;
+const ALMOST_GONE_THRESHOLD = 2;
+
+function getStockAvailability(stockQuantity) {
+  const qty = Number(stockQuantity || 0);
+  if (qty <= 0) return "Out of stock";
+  if (qty <= ALMOST_GONE_THRESHOLD) return "Almost gone";
+  if (qty <= LOW_STOCK_THRESHOLD) return "Low stock";
+  return "Available";
+}
+
 // ─── Icons ────────────────────────────────────────────────────────────────────
 
 function TrashIcon() {
@@ -306,6 +324,7 @@ function CartItem({ item, onChangeQty, onRemove }) {
   const isOutOfStock = stockQuantity <= 0;
   const isMaxStock = !isOutOfStock && item.quantity >= stockQuantity;
   const isPlusDisabled = isOutOfStock || isMaxStock;
+  const availability = getStockAvailability(stockQuantity);
 
   return (
     <div style={styles.card}>
@@ -383,7 +402,7 @@ function CartItem({ item, onChangeQty, onRemove }) {
   )}
 
   <div style={isOutOfStock ? styles.stockTextOut : styles.stockText}>
-    {isOutOfStock ? "Out of stock" : `Available stock: ${stockQuantity}`}
+    {availability}
   </div>
 
   <div style={styles.itemFooter}>

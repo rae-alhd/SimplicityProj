@@ -86,6 +86,7 @@ function Dashboard({ user, setUser }) {
     const activeProducts = products.filter((p) => p.is_active !== false).length;
     const customizableProducts = products.filter((p) => p.is_customizable).length;
     const pendingOrders = orders.filter((o) => o.status === "pending").length;
+    const deliveredOrders = orders.filter((o) => o.status === "delivered").length;
 
     return {
       totalProducts: products.length,
@@ -93,6 +94,7 @@ function Dashboard({ user, setUser }) {
       customizableProducts,
       totalOrders: orders.length,
       pendingOrders,
+      deliveredOrders,
     };
   }, [products, orders]);
 
@@ -233,7 +235,7 @@ function Dashboard({ user, setUser }) {
               label="Total Items Sold"
               value={earnings.totalItemsSold}
             />
-            <StatCard label="Pending Orders" value={stats.pendingOrders} />
+            <StatCard label="Delivered Orders" value={stats.deliveredOrders} />
           </div>
 
           <div style={{ marginTop: "22px" }}>

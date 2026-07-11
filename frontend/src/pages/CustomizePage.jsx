@@ -23,8 +23,6 @@ function CustomizePage() {
   const [selectedOption, setSelectedOption] = useState(null);
   const [selectedCollectionId, setSelectedCollectionId] = useState(null);
   const [selectedDesign, setSelectedDesign] = useState(null);
-  const [customText, setCustomText] = useState("");
-  const [customNote, setCustomNote] = useState("");
   const [quantity, setQuantity] = useState(1);
 
   const [loadingProducts, setLoadingProducts] = useState(true);
@@ -74,8 +72,6 @@ function CustomizePage() {
         setSelectedColor(data.colors?.[0] || null);
         setSelectedSize(data.sizes?.[0] || null);
         setSelectedOption(data.options?.[0] || null);
-        setCustomText("");
-        setCustomNote("");
         setQuantity(1);
 
         const firstCollectionWithDesigns = (data.collections || []).find(
@@ -124,10 +120,6 @@ function CustomizePage() {
 
   const selectedColorHex = selectedColor?.color_hex || "#111111";
 
-  const textPreview = customText.trim()
-    ? customText.trim().slice(0, 18)
-    : "YOUR TEXT";
-
   const handleAddToCart = async () => {
     const token = localStorage.getItem("token");
 
@@ -162,8 +154,6 @@ function CustomizePage() {
           quantity,
           is_customized: true,
           customization_option_id: selectedOption.id,
-          custom_text: customText,
-          custom_note: customNote,
           design_id: selectedDesign?.id || null,
         }),
       });
@@ -239,10 +229,6 @@ function CustomizePage() {
               }}
             >
               <img src={hoodieImg} alt="Hoodie preview" style={styles.hoodieImg} />
-
-              <div style={styles.textOverlay}>
-                {textPreview}
-              </div>
             </div>
 
             <div style={styles.previewInfo}>
@@ -548,27 +534,6 @@ function CustomizePage() {
                 </div>
               </div>
 
-              <div style={styles.controlBlock}>
-                <label style={styles.label}>Custom Text</label>
-                <input
-                  value={customText}
-                  onChange={(e) => setCustomText(e.target.value)}
-                  placeholder="Example: SIMPLICITY"
-                  maxLength={30}
-                  style={styles.input}
-                />
-              </div>
-
-              <div style={styles.controlBlock}>
-                <label style={styles.label}>Design Notes</label>
-                <textarea
-                  value={customNote}
-                  onChange={(e) => setCustomNote(e.target.value)}
-                  placeholder="Example: make the text small, centered, and clean..."
-                  style={styles.textarea}
-                />
-              </div>
-
               <div style={styles.quantityRow}>
                 <button onClick={() => setQuantity((q) => Math.max(1, q - 1))}>
                   -
@@ -703,22 +668,6 @@ const styles = {
     objectFit: "contain",
     position: "relative",
     zIndex: 2,
-  },
-  textOverlay: {
-    position: "absolute",
-    top: "43%",
-    left: "50%",
-    transform: "translate(-50%, -50%)",
-    zIndex: 3,
-    color: "#111",
-    background: "rgba(255,255,255,0.74)",
-    padding: "6px 12px",
-    borderRadius: "2px",
-    fontSize: "12px",
-    letterSpacing: "0.16em",
-    textTransform: "uppercase",
-    maxWidth: "150px",
-    textAlign: "center",
   },
   previewInfo: {
     position: "absolute",
@@ -973,19 +922,6 @@ const styles = {
     cursor: "pointer",
     display: "grid",
     gap: "5px",
-    fontFamily: "Georgia, serif",
-  },
-  input: {
-    width: "100%",
-    padding: "14px",
-    border: "1px solid #ddd",
-    fontFamily: "Georgia, serif",
-  },
-  textarea: {
-    width: "100%",
-    minHeight: "90px",
-    padding: "14px",
-    border: "1px solid #ddd",
     fontFamily: "Georgia, serif",
   },
   quantityRow: {
