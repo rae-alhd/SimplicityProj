@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import API_BASE from "../config/api";
+import ImageGallery from "../components/ImageGallery";
+import { getActiveGallery } from "../utils/productGallery";
 
 /* ─────────────────────────────────────────────
    STYLES
@@ -61,60 +63,6 @@ const s = {
   imageCol: {
     position: "sticky",
     top: "100px",
-  },
-  imageWrap: {
-    width: "100%",
-    aspectRatio: "3 / 4",
-    background: "#f0eeeb",
-    overflow: "hidden",
-  },
-  image: {
-    width: "100%",
-    height: "100%",
-    objectFit: "cover",
-    display: "block",
-  },
-  placeholder: {
-    width: "100%",
-    height: "100%",
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    background: "#ece9e4",
-    gap: "12px",
-  },
-  placeholderIcon: {
-    width: "40px",
-    height: "40px",
-    opacity: 0.25,
-  },
-  placeholderText: {
-    fontSize: "11px",
-    letterSpacing: "0.2em",
-    textTransform: "uppercase",
-    color: "#aaa",
-    fontFamily: FONT,
-  },
-  thumbRow: {
-    display: "flex",
-    gap: "8px",
-    marginTop: "12px",
-  },
-  thumbBtn: (selected) => ({
-    width: "64px",
-    height: "80px",
-    padding: 0,
-    border: selected ? "1.5px solid #1a1a1a" : "1px solid #ddd",
-    background: "#fff",
-    cursor: "pointer",
-    overflow: "hidden",
-  }),
-  thumbImg: {
-    width: "100%",
-    height: "100%",
-    objectFit: "cover",
-    display: "block",
   },
 
   /* info column */
@@ -364,24 +312,6 @@ const s = {
 ───────────────────────────────────────────── */
 const SIZES = ["S", "M", "L", "XL", "2XL", "3XL", "4XL"];
 
-/* Resolve which set of images to show for the current color selection:
-   - no color selected -> general images (color_id === null), else all images
-   - color selected -> that color's images, else general images only */
-function getActiveGallery(product, selectedColor) {
-  const images = product?.images || [];
-  const generalImages = images.filter((img) => img.color_id === null);
-
-  if (!selectedColor) {
-    return generalImages.length > 0 ? generalImages : images;
-  }
-
-  const colorImages = images.filter(
-    (img) => Number(img.color_id) === Number(selectedColor.id)
-  );
-
-  return colorImages.length > 0 ? colorImages : generalImages;
-}
-
 export default function ProductDetails({ fetchCart }) {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -393,8 +323,6 @@ export default function ProductDetails({ fetchCart }) {
   const [selectedSize, setSelectedSize] = useState(null);
   const [qty, setQty] = useState(1);
   const [added, setAdded] = useState(false);
-  const [imgError, setImgError] = useState(false);
-  const [selectedImageUrl, setSelectedImageUrl] = useState(null);
   const [colors, setColors] = useState([]);
   const [selectedColor, setSelectedColor] = useState(null);
 
@@ -420,24 +348,6 @@ export default function ProductDetails({ fetchCart }) {
         setLoading(false);
       });
   }, [id]);
-
-  useEffect(() => {
-    if (!product) {
-      setSelectedImageUrl(null);
-      setImgError(false);
-      return;
-    }
-
-    const activeGallery = getActiveGallery(product, selectedColor);
-
-    if (activeGallery.length > 0) {
-      setSelectedImageUrl(activeGallery[0].image_url);
-    } else {
-      setSelectedImageUrl(product.main_image_url || product.image_url || null);
-    }
-
-    setImgError(false);
-  }, [product, selectedColor]);
 
   useEffect(() => {
     setColors([]);
@@ -542,9 +452,7 @@ export default function ProductDetails({ fetchCart }) {
     );
   }
 
-  const showImage = selectedImageUrl && !imgError;
   const activeGallery = getActiveGallery(product, selectedColor);
-  const hasMultipleImages = activeGallery.length > 1;
   const isOutOfStock = Number(product.stock_quantity || 0) <= 0;
 
   return (
@@ -580,47 +488,11 @@ export default function ProductDetails({ fetchCart }) {
 
         {/* ── Image column ── */}
         <div style={s.imageCol}>
-          <div style={s.imageWrap}>
-            {showImage ? (
-              <img
-                src={selectedImageUrl}
-                alt={product.name}
-                style={s.image}
-                onError={() => setImgError(true)}
-              />
-            ) : (
-              <div style={s.placeholder}>
-                <svg
-                  style={s.placeholderIcon}
-                  viewBox="0 0 40 40"
-                  fill="none"
-                  xmlns="http://www.w3.org/2000/svg"
-                >
-                  <rect x="4" y="4" width="32" height="32" rx="1" stroke="#1a1a1a" strokeWidth="1.5" />
-                  <circle cx="14" cy="14" r="3" stroke="#1a1a1a" strokeWidth="1.5" />
-                  <path d="M4 28l9-8 6 6 5-4 12 10" stroke="#1a1a1a" strokeWidth="1.5" strokeLinejoin="round" />
-                </svg>
-                <span style={s.placeholderText}>No Image</span>
-              </div>
-            )}
-          </div>
-
-          {hasMultipleImages && (
-            <div style={s.thumbRow}>
-              {activeGallery.map((image) => (
-                <button
-                  key={image.id}
-                  style={s.thumbBtn(image.image_url === selectedImageUrl)}
-                  onClick={() => {
-                    setSelectedImageUrl(image.image_url);
-                    setImgError(false);
-                  }}
-                >
-                  <img src={image.image_url} alt={product.name} style={s.thumbImg} />
-                </button>
-              ))}
-            </div>
-          )}
+          <ImageGallery
+            key={`${product.id}-${selectedColor?.id ?? "none"}`}
+            images={activeGallery}
+            altText={product.name}
+          />
         </div>
 
         {/* ── Info column ── */}

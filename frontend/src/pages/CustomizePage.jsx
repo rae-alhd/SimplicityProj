@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import hoodieImg from "../assets/white-hoodie.png";
 import API_BASE from "../config/api";
+import ImageGallery from "../components/ImageGallery";
+import { getActiveGallery } from "../utils/productGallery";
 
 // /api/customization/products and /api/customization/products/:id do not
 // currently select stock_quantity, so this only takes effect once that field
@@ -118,7 +119,7 @@ function CustomizePage() {
     return (base + productExtra + optionExtra) * quantity;
   }, [product, selectedOption, quantity]);
 
-  const selectedColorHex = selectedColor?.color_hex || "#111111";
+  const activeGallery = getActiveGallery(product, selectedColor);
 
   const handleAddToCart = async () => {
     const token = localStorage.getItem("token");
@@ -215,21 +216,12 @@ function CustomizePage() {
           </div>
 
           <div style={styles.previewStage}>
-            <div
-              style={{
-                ...styles.colorGlow,
-                background: selectedColorHex,
-              }}
+            <ImageGallery
+              key={`${product?.id ?? "none"}-${selectedColor?.id ?? "none"}`}
+              images={activeGallery}
+              altText={product?.name || "Product"}
+              stageStyle={styles.gallerySlot}
             />
-
-            <div
-              style={{
-                ...styles.hoodieFrame,
-                background: `linear-gradient(145deg, ${selectedColorHex}, #f7f3ec)`,
-              }}
-            >
-              <img src={hoodieImg} alt="Hoodie preview" style={styles.hoodieImg} />
-            </div>
 
             <div style={styles.previewInfo}>
               <strong>{product?.name || "Custom Hoodie"}</strong>
@@ -635,50 +627,23 @@ const styles = {
     padding: "5px 10px",
   },
   previewStage: {
-    position: "relative",
-    minHeight: "470px",
     display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    overflow: "hidden",
-    background:
-      "radial-gradient(circle at 20% 20%, #f0dfb7, transparent 28%), linear-gradient(135deg, #f8f4ed, #ffffff)",
+    flexDirection: "column",
+    gap: "16px",
   },
-  colorGlow: {
-    position: "absolute",
-    width: "280px",
-    height: "280px",
-    borderRadius: "50%",
-    opacity: 0.18,
-    filter: "blur(20px)",
-  },
-  hoodieFrame: {
-    position: "relative",
-    width: "320px",
-    height: "380px",
-    borderRadius: "28px",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    boxShadow: "0 30px 80px rgba(0,0,0,0.16)",
-    overflow: "hidden",
-  },
-  hoodieImg: {
-    width: "90%",
-    objectFit: "contain",
-    position: "relative",
-    zIndex: 2,
+  gallerySlot: {
+    maxWidth: "440px",
+    margin: "0 auto",
   },
   previewInfo: {
-    position: "absolute",
-    bottom: "24px",
-    left: "24px",
-    right: "24px",
     display: "flex",
     justifyContent: "space-between",
+    flexWrap: "wrap",
     gap: "12px",
     color: "#555",
     fontSize: "13px",
+    paddingTop: "16px",
+    borderTop: "1px solid #eee",
   },
   examplesSection: {
     marginTop: "28px",
