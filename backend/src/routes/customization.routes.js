@@ -81,6 +81,21 @@ router.get("/products/:productId", async (req, res) => {
       });
     }
 
+    const imagesResult = await pool.query(
+      `
+      SELECT id, product_id, image_url, sort_order, is_main, color_id
+      FROM product_images
+      WHERE product_id = $1 AND is_active = true
+      ORDER BY sort_order ASC, id ASC
+      `,
+      [productId]
+    );
+
+    const [productWithImages] = attachImageData(
+      productResult.rows,
+      imagesResult.rows
+    );
+
     const colorsResult = await pool.query(
       `
       SELECT id, color_name, color_hex, sort_order
@@ -156,7 +171,7 @@ router.get("/products/:productId", async (req, res) => {
     }));
 
     res.json({
-      product: productResult.rows[0],
+      product: productWithImages,
       colors: colorsResult.rows,
       sizes: sizesResult.rows,
       options: optionsResult.rows,
