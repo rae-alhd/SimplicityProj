@@ -81,6 +81,27 @@ router.get("/:id", async (req, res) => {
     }
   });
 
+  router.get("/:id/sizes", async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const result = await pool.query(
+        `
+        SELECT id, size_label, sort_order
+        FROM customizable_product_sizes
+        WHERE product_id = $1 AND is_active = true
+        ORDER BY sort_order ASC, id ASC
+        `,
+        [id]
+      );
+
+      res.status(200).json(result.rows);
+    } catch (err) {
+      console.error("Error fetching product sizes:", err.message);
+      res.status(500).json({ error: "Failed to fetch product sizes" });
+    }
+  });
+
   router.post("/", authMiddleware, adminOnly, async (req, res) => {
     try {
         const parsed = productSchema.safeParse(req.body);

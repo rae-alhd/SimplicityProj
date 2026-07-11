@@ -150,6 +150,37 @@ const s = {
     gap: "8px",
     marginBottom: "28px",
   },
+  sizesLoadingText: {
+    fontSize: "12px",
+    color: "#999",
+    fontFamily: FONT,
+    letterSpacing: "0.04em",
+    marginBottom: "28px",
+  },
+  sizesStatusRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "14px",
+    marginBottom: "28px",
+  },
+  sizesErrorText: {
+    fontSize: "12px",
+    color: "#c0392b",
+    fontFamily: FONT,
+    letterSpacing: "0.04em",
+  },
+  retryBtn: {
+    background: "none",
+    border: "none",
+    borderBottom: "1px solid #1a1a1a",
+    color: "#1a1a1a",
+    fontFamily: FONT,
+    fontSize: "11px",
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    cursor: "pointer",
+    padding: 0,
+  },
   sizeBtn: (selected) => ({
     width: "48px",
     height: "48px",
@@ -310,8 +341,6 @@ const s = {
 /* ─────────────────────────────────────────────
    COMPONENT
 ───────────────────────────────────────────── */
-const SIZES = ["S", "M", "L", "XL", "2XL", "3XL", "4XL"];
-
 export default function ProductDetails({ fetchCart }) {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -320,7 +349,10 @@ export default function ProductDetails({ fetchCart }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  const [sizes, setSizes] = useState([]);
   const [selectedSize, setSelectedSize] = useState(null);
+  const [sizesLoading, setSizesLoading] = useState(true);
+  const [sizesError, setSizesError] = useState(null);
   const [qty, setQty] = useState(1);
   const [added, setAdded] = useState(false);
   const [colors, setColors] = useState([]);
@@ -370,13 +402,57 @@ export default function ProductDetails({ fetchCart }) {
       });
   }, [id]);
 
+  function loadSizes() {
+    setSizes([]);
+    setSelectedSize(null);
+    setSizesError(null);
+    setSizesLoading(true);
+
+    fetch(`${API_BASE}/products/${id}/sizes`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`Server error: ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        const activeSizes = Array.isArray(data) ? data : [];
+        setSizes(activeSizes);
+        if (activeSizes.length > 0) {
+          setSelectedSize(activeSizes[0]);
+        }
+        setSizesLoading(false);
+      })
+      .catch((err) => {
+        console.error("Error fetching product sizes:", err);
+        // A failed request is NOT the same as "this product has no sizes" —
+        // leave sizesError set so Add to Cart stays blocked until this
+        // resolves (successfully or via Retry), instead of silently
+        // treating an unknown state as "no size required."
+        setSizesError("Sizes could not be loaded. Please try again.");
+        setSizesLoading(false);
+      });
+  }
+
+  useEffect(() => {
+    loadSizes();
+  }, [id]);
+
   const handleAddToCart = async () => {
     if (Number(product?.stock_quantity || 0) <= 0) {
       alert("This product is out of stock.");
       return;
     }
 
-    if (!selectedSize) {
+    if (sizesLoading) {
+      alert("Sizes are still loading. Please wait a moment and try again.");
+      return;
+    }
+
+    if (sizesError) {
+      alert("Sizes could not be loaded. Please try again.");
+      return;
+    }
+
+    if (sizes.length > 0 && !selectedSize) {
       alert("Please select a size.");
       return;
     }
@@ -399,7 +475,7 @@ export default function ProductDetails({ fetchCart }) {
         body: JSON.stringify({
           product_id: product.id,
           color: selectedColor?.color_name || "Default",
-          size: selectedSize,
+          size: selectedSize?.size_label || null,
           quantity: qty,
         }),
       });
@@ -454,6 +530,7 @@ export default function ProductDetails({ fetchCart }) {
 
   const activeGallery = getActiveGallery(product, selectedColor);
   const isOutOfStock = Number(product.stock_quantity || 0) <= 0;
+  const isAddToCartBlocked = isOutOfStock || sizesLoading || Boolean(sizesError);
 
   return (
     <div style={s.page}>
@@ -536,36 +613,53 @@ export default function ProductDetails({ fetchCart }) {
 
           <hr style={s.divider} />
 
-          {/* Size selector */}
-          <span style={s.label}>
-            Select Size
-            {selectedSize && (
-              <span style={{ color: "#1a1a1a", marginLeft: "10px" }}>
-                — {selectedSize}
-              </span>
-            )}
-          </span>
-          <div style={s.sizeRow}>
-            {SIZES.map((size) => (
-              <button
-                key={size}
-                style={s.sizeBtn(selectedSize === size)}
-                onClick={() => setSelectedSize(size)}
-                onMouseEnter={(e) => {
-                  if (selectedSize !== size) {
-                    e.currentTarget.style.borderColor = "#1a1a1a";
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  if (selectedSize !== size) {
-                    e.currentTarget.style.borderColor = "#ddd";
-                  }
-                }}
-              >
-                {size}
+          {sizesLoading && (
+            <p style={s.sizesLoadingText}>Loading sizes…</p>
+          )}
+
+          {!sizesLoading && sizesError && (
+            <div style={s.sizesStatusRow}>
+              <span style={s.sizesErrorText}>{sizesError}</span>
+              <button type="button" onClick={loadSizes} style={s.retryBtn}>
+                Retry
               </button>
-            ))}
-          </div>
+            </div>
+          )}
+
+          {!sizesLoading && !sizesError && sizes.length > 0 && (
+            <>
+              {/* Size selector */}
+              <span style={s.label}>
+                Select Size
+                {selectedSize && (
+                  <span style={{ color: "#1a1a1a", marginLeft: "10px" }}>
+                    — {selectedSize.size_label}
+                  </span>
+                )}
+              </span>
+              <div style={s.sizeRow}>
+                {sizes.map((size) => (
+                  <button
+                    key={size.id}
+                    style={s.sizeBtn(selectedSize?.id === size.id)}
+                    onClick={() => setSelectedSize(size)}
+                    onMouseEnter={(e) => {
+                      if (selectedSize?.id !== size.id) {
+                        e.currentTarget.style.borderColor = "#1a1a1a";
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      if (selectedSize?.id !== size.id) {
+                        e.currentTarget.style.borderColor = "#ddd";
+                      }
+                    }}
+                  >
+                    {size.size_label}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
 
           {colors.length > 0 && (
             <>
@@ -633,18 +727,24 @@ export default function ProductDetails({ fetchCart }) {
             <button
               style={{
                 ...s.addToCart,
-                ...(isOutOfStock ? s.disabledBtn : {}),
+                ...(isAddToCartBlocked ? s.disabledBtn : {}),
               }}
               onClick={handleAddToCart}
-              disabled={isOutOfStock}
+              disabled={isAddToCartBlocked}
               onMouseEnter={(e) => {
-                if (!isOutOfStock) e.currentTarget.style.background = "#333";
+                if (!isAddToCartBlocked) e.currentTarget.style.background = "#333";
               }}
               onMouseLeave={(e) => {
-                if (!isOutOfStock) e.currentTarget.style.background = "#1a1a1a";
+                if (!isAddToCartBlocked) e.currentTarget.style.background = "#1a1a1a";
               }}
             >
-              {isOutOfStock ? "Out of Stock" : "Add to Cart"}
+              {isOutOfStock
+                ? "Out of Stock"
+                : sizesLoading
+                ? "Loading Sizes…"
+                : sizesError
+                ? "Sizes Unavailable"
+                : "Add to Cart"}
             </button>
 
             {product.is_customizable && (
@@ -672,7 +772,9 @@ export default function ProductDetails({ fetchCart }) {
           </div>
 
           {added && (
-            <p style={s.addedMsg}>Added to cart — {selectedSize} × {qty}</p>
+            <p style={s.addedMsg}>
+              Added to cart{selectedSize ? ` — ${selectedSize.size_label}` : ""} × {qty}
+            </p>
           )}
 
           {/* Meta tags */}
