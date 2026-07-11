@@ -160,30 +160,6 @@ const styles = {
     transition: "background 0.25s, color 0.25s",
     fontFamily: "'Georgia', serif",
   },
-  heroScroll: {
-    position: "absolute",
-    bottom: "3rem",
-    left: "50%",
-    transform: "translateX(-50%)",
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    gap: "8px",
-    zIndex: 1,
-  },
-  heroScrollText: {
-    fontSize: "0.62rem",
-    letterSpacing: "0.3em",
-    textTransform: "uppercase",
-    color: midGray,
-  },
-  heroScrollBar: {
-    width: "1px",
-    height: "48px",
-    background: `linear-gradient(to bottom, ${gold}, transparent)`,
-    animation: "scrollPulse 2s ease-in-out infinite",
-  },
-
   // ─── DIVIDER ────────────────────────────────────────────
   divider: {
     display: "flex",
@@ -534,10 +510,6 @@ const styles = {
 
 // Keyframes injected once
 const keyframesCSS = `
-  @keyframes scrollPulse {
-    0%, 100% { opacity: 0.4; transform: scaleY(0.85); }
-    50% { opacity: 1; transform: scaleY(1); }
-  }
   @keyframes fadeUp {
     from { opacity: 0; transform: translateY(24px); }
     to   { opacity: 1; transform: translateY(0); }
@@ -665,11 +637,6 @@ export default function Home() {
                 {secondaryButtonText}
               </button>
             </div>
-          </div>
-
-          <div style={styles.heroScroll}>
-            <span style={styles.heroScrollText}>Scroll</span>
-            <div style={styles.heroScrollBar} />
           </div>
         </section>
 

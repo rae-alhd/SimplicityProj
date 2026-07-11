@@ -208,27 +208,6 @@ function Dashboard({ user, setUser }) {
           </div>
         </header>
 
-        <section style={styles.quickActions}>
-          <button onClick={() => navigate("/admin/orders")} style={styles.actionBtn}>
-            Manage Orders
-          </button>
-          <button onClick={() => navigate("/admin/customization")} style={styles.actionBtn}>
-            Manage Customization
-          </button>
-          <button onClick={() => navigate("/admin/homepage")} style={styles.actionBtn}>
-            Manage Homepage
-          </button>
-          <button onClick={() => navigate("/admin/products")} style={styles.actionBtn}>
-            Manage Products
-          </button>
-          <button onClick={() => navigate("/products")} style={styles.actionBtnLight}>
-            View Storefront
-          </button>
-          <button onClick={() => navigate("/customize")} style={styles.actionBtnLight}>
-            Preview Customer Studio
-          </button>
-        </section>
-
         <section style={styles.statsGrid}>
           <StatCard label="Total Products" value={stats.totalProducts} />
           <StatCard label="Active Products" value={stats.activeProducts} />
@@ -501,22 +480,6 @@ const styles = {
     gap: "10px",
     minHeight: "96px",
     alignItems: "center",
-  },
-  quickActions: {
-    display: "grid",
-    gridTemplateColumns: "repeat(4, 1fr)",
-    gap: "14px",
-    marginBottom: "22px",
-  },
-  actionBtn: {
-    background: "#111",
-    color: "#fff",
-    border: "none",
-    padding: "15px",
-    cursor: "pointer",
-    letterSpacing: "0.12em",
-    textTransform: "uppercase",
-    fontFamily: "Georgia, serif",
   },
   actionBtnLight: {
     background: "#fff",

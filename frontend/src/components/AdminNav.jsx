@@ -4,7 +4,7 @@ const NAV_LINKS = [
   { label: "Dashboard", path: "/dashboard" },
   { label: "Products", path: "/admin/products" },
   { label: "Orders", path: "/admin/orders" },
-  { label: "Customization", path: "/admin/customization" },
+  { label: "Design Studio", path: "/admin/customization" },
   { label: "Homepage", path: "/admin/homepage" },
   { label: "Storefront", path: "/products" },
 ];
@@ -45,9 +45,11 @@ export default function AdminNav({ onLogout }) {
           })}
         </div>
 
-        <button onClick={handleLogout} style={styles.logoutBtn}>
-          Logout
-        </button>
+        <div style={styles.logoutWrap}>
+          <button onClick={handleLogout} style={styles.logoutBtn}>
+            Logout
+          </button>
+        </div>
       </div>
     </nav>
   );
@@ -96,6 +98,10 @@ const styles = {
     background: "#111",
     color: "#fff",
     borderColor: "#111",
+  },
+  logoutWrap: {
+    paddingLeft: "16px",
+    borderLeft: "1px solid #e0dbd4",
   },
   logoutBtn: {
     padding: "9px 16px",

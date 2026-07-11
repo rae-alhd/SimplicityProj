@@ -2,7 +2,7 @@ import Navbar from "./components/Navbar";
 import { useEffect } from "react";
 import ProtectedRoute from "./components/ProtectedRoute";
 import { useState } from "react";
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, useLocation } from "react-router-dom";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
@@ -27,6 +27,13 @@ function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [cart, setCart] = useState([]);
+  const location = useLocation();
+
+  // Admin pages render their own AdminNav; showing the public Navbar too
+  // would put two navigation bars on the same screen.
+  const isAdminRoute =
+    location.pathname === "/dashboard" ||
+    location.pathname.startsWith("/admin/");
   const fetchCart = async () => {
     try {
       const token = localStorage.getItem("token");
@@ -81,16 +88,18 @@ function App() {
 
   return (
     <>
-      <Navbar
-  user={user}
-  setUser={setUser}
-  cartCount={
-    Array.isArray(cart)
-      ? cart.reduce((sum, item) => sum + item.quantity, 0)
-      : 0
-  }
-/>
-  
+      {!isAdminRoute && (
+        <Navbar
+          user={user}
+          setUser={setUser}
+          cartCount={
+            Array.isArray(cart)
+              ? cart.reduce((sum, item) => sum + item.quantity, 0)
+              : 0
+          }
+        />
+      )}
+
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login setUser={setUser} />} />

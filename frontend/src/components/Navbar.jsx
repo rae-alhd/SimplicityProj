@@ -160,14 +160,12 @@ const getNavLinks = (user) => {
   ];
   if (!user) {
     links.push({ label: "Login", href: "/login" });
+  } else if (user.role === "admin") {
+    // Design Studio and the admin Orders view live in AdminNav, reached
+    // via Dashboard — not mixed into the customer-facing nav directly.
+    links.push({ label: "Dashboard", href: "/dashboard" });
   } else {
-    if (user.role === "admin") {
-      links.push({ label: "Dashboard", href: "/dashboard" });
-      links.push({ label: "Studio", href: "/admin/customization" });
-      links.push({ label: "Orders", href: "/admin/orders" });
-    } else {
-      links.push({ label: "Orders", href: "/my-orders" });
-    }
+    links.push({ label: "Orders", href: "/my-orders" });
   }
   return links;
 };

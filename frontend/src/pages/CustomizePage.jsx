@@ -629,10 +629,12 @@ const styles = {
     fontSize: "12px",
   },
   title: {
-    fontSize: "56px",
+    fontSize: "clamp(2.1rem, 5.5vw, 3.5rem)",
     fontWeight: 400,
-    margin: "10px 0",
-    letterSpacing: "0.05em",
+    lineHeight: 1.25,
+    margin: "14px auto 20px",
+    maxWidth: "760px",
+    letterSpacing: "0.03em",
   },
   subtitle: {
     maxWidth: "680px",
