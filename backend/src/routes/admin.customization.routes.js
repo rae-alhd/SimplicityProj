@@ -1196,4 +1196,471 @@ router.put("/variants/:variantId/sizes", async (req, res) => {
   }
 });
 
+// -------------------- DESIGN/COLOR PREVIEW IMAGES (Task E2) --------------------
+// Multiple ordered preview photos per collection_design_variants row (e.g.
+// "Yemen on Black" gets its own front/back/close-up gallery, separate from
+// "Yemen on White"). Mirrors admin.products.routes.js's product-gallery
+// endpoints (same multer config shape, same main-image/deactivate
+// transaction pattern) and the design-image upload already in this file —
+// no new image-management approach is introduced here.
+
+const PREVIEW_UPLOAD_DIR = path.join(
+  __dirname,
+  "..",
+  "..",
+  "uploads",
+  "design-previews"
+);
+
+const PREVIEW_MIME_EXTENSIONS = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+};
+
+const previewStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    fs.mkdirSync(PREVIEW_UPLOAD_DIR, { recursive: true });
+    cb(null, PREVIEW_UPLOAD_DIR);
+  },
+  filename: (req, file, cb) => {
+    const ext = PREVIEW_MIME_EXTENSIONS[file.mimetype] || "";
+    const uniqueName = `preview-${req.params.variantId}-${Date.now()}-${crypto
+      .randomBytes(6)
+      .toString("hex")}${ext}`;
+    cb(null, uniqueName);
+  },
+});
+
+const uploadPreviewImages = multer({
+  storage: previewStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!PREVIEW_MIME_EXTENSIONS[file.mimetype]) {
+      return cb(new Error("Only JPEG, PNG, and WEBP images are allowed"));
+    }
+    cb(null, true);
+  },
+});
+
+async function ensureVariantExists(req, res, next) {
+  try {
+    const { variantId } = req.params;
+    const result = await pool.query(
+      "SELECT id FROM collection_design_variants WHERE id = $1",
+      [variantId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Variant not found" });
+    }
+
+    next();
+  } catch (err) {
+    console.error("Check variant exists error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+}
+
+// GET /api/admin/customization/variants/:variantId/preview-images
+router.get(
+  "/variants/:variantId/preview-images",
+  ensureVariantExists,
+  async (req, res) => {
+    try {
+      const { variantId } = req.params;
+
+      // Intentionally not filtering by is_active — inactive images are
+      // still returned so the owner can manage/reactivate them.
+      const result = await pool.query(
+        `
+        SELECT id, variant_id, image_url, sort_order, is_main, is_active, created_at
+        FROM collection_design_preview_images
+        WHERE variant_id = $1
+        ORDER BY is_main DESC, sort_order ASC, id ASC
+        `,
+        [variantId]
+      );
+
+      res.json(result.rows);
+    } catch (err) {
+      console.error("Get variant preview images error:", err);
+      res.status(500).json({ error: "Server error" });
+    }
+  }
+);
+
+// POST /api/admin/customization/variants/:variantId/preview-images
+router.post(
+  "/variants/:variantId/preview-images",
+  ensureVariantExists,
+  (req, res, next) => {
+    uploadPreviewImages.array("images")(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ error: err.message });
+      }
+      next();
+    });
+  },
+  async (req, res) => {
+    const { variantId } = req.params;
+    const files = req.files || [];
+
+    if (files.length === 0) {
+      return res.status(400).json({ error: "At least one image file is required" });
+    }
+
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      const activeCountResult = await client.query(
+        "SELECT COUNT(*) FROM collection_design_preview_images WHERE variant_id = $1 AND is_active = true",
+        [variantId]
+      );
+      const isFirstActiveImage = Number(activeCountResult.rows[0].count) === 0;
+
+      const sortOrderResult = await client.query(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_sort_order FROM collection_design_preview_images WHERE variant_id = $1",
+        [variantId]
+      );
+      let nextSortOrder = sortOrderResult.rows[0].next_sort_order;
+
+      const baseUrl = getPublicBaseUrl(req);
+      const insertedRows = [];
+
+      for (let i = 0; i < files.length; i++) {
+        const imageUrl = `${baseUrl}/uploads/design-previews/${files[i].filename}`;
+        // Only the very first file of the very first upload for this
+        // variant becomes main automatically; every other image (in this
+        // batch or a later one) uploads as non-main.
+        const isMain = isFirstActiveImage && i === 0;
+
+        const insertResult = await client.query(
+          `
+          INSERT INTO collection_design_preview_images
+          (variant_id, image_url, sort_order, is_main, is_active)
+          VALUES ($1, $2, $3, $4, true)
+          RETURNING *
+          `,
+          [variantId, imageUrl, nextSortOrder, isMain]
+        );
+
+        insertedRows.push(insertResult.rows[0]);
+        nextSortOrder += 1;
+      }
+
+      await client.query("COMMIT");
+      res.status(201).json(insertedRows);
+    } catch (err) {
+      await client.query("ROLLBACK");
+      // The transaction rolled back cleanly, so none of these files ended
+      // up referenced by a persisted row — safe to delete all of them.
+      for (const file of files) {
+        fs.unlink(file.path, () => {});
+      }
+      console.error("Upload variant preview images error:", err);
+      res.status(500).json({ error: "Server error" });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+// PATCH /api/admin/customization/preview-images/:imageId
+router.patch("/preview-images/:imageId", async (req, res) => {
+  const { imageId } = req.params;
+  const bodyKeys = Object.keys(req.body || {});
+  const allowedKeys = ["sort_order", "is_active"];
+
+  if (bodyKeys.length === 0) {
+    return res.status(400).json({
+      error: "At least one of sort_order or is_active is required",
+    });
+  }
+
+  const unsupportedKeys = bodyKeys.filter((k) => !allowedKeys.includes(k));
+  if (unsupportedKeys.length > 0) {
+    return res.status(400).json({
+      error: `Unsupported field(s): ${unsupportedKeys.join(", ")}. Only sort_order and is_active may be changed here.`,
+    });
+  }
+
+  const { sort_order, is_active } = req.body;
+
+  if (is_active !== undefined && typeof is_active !== "boolean") {
+    return res.status(400).json({ error: "is_active must be a boolean" });
+  }
+
+  let parsedSortOrder = null;
+  if (sort_order !== undefined) {
+    parsedSortOrder = Number(sort_order);
+    if (!Number.isInteger(parsedSortOrder)) {
+      return res.status(400).json({ error: "sort_order must be an integer" });
+    }
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const currentResult = await client.query(
+      "SELECT id, variant_id, is_main, is_active FROM collection_design_preview_images WHERE id = $1 FOR UPDATE",
+      [imageId]
+    );
+
+    if (currentResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Preview image not found" });
+    }
+
+    const current = currentResult.rows[0];
+    const isActiveParam = is_active === undefined ? null : is_active;
+
+    // If this update deactivates the image, is_main is force-cleared in
+    // the same statement — an inactive row must never stay flagged main.
+    await client.query(
+      `
+      UPDATE collection_design_preview_images
+      SET
+        sort_order = COALESCE($1, sort_order),
+        is_active = COALESCE($2, is_active),
+        is_main = CASE WHEN $2 = false THEN false ELSE is_main END
+      WHERE id = $3
+      `,
+      [parsedSortOrder, isActiveParam, imageId]
+    );
+
+    const wasMain = current.is_main;
+    const isDeactivating = is_active === false;
+    const isReactivating = is_active === true && current.is_active === false;
+
+    // Deactivation rule: if the deactivated image was main, promote the
+    // earliest remaining active image (by sort_order, then id). If none
+    // remain active, the variant temporarily has no main image.
+    if (isDeactivating && wasMain) {
+      const nextMainResult = await client.query(
+        `
+        SELECT id FROM collection_design_preview_images
+        WHERE variant_id = $1 AND is_active = true
+        ORDER BY sort_order ASC, id ASC
+        LIMIT 1
+        `,
+        [current.variant_id]
+      );
+
+      if (nextMainResult.rows.length > 0) {
+        await client.query(
+          "UPDATE collection_design_preview_images SET is_main = true WHERE id = $1",
+          [nextMainResult.rows[0].id]
+        );
+      }
+    }
+
+    // Reactivation rule: reactivating never forces main status by itself.
+    // It only becomes main if the variant currently has no active main
+    // image at all, in which case the earliest active image is promoted
+    // (which may or may not be this same image).
+    if (isReactivating) {
+      const existingMainResult = await client.query(
+        `
+        SELECT id FROM collection_design_preview_images
+        WHERE variant_id = $1 AND is_active = true AND is_main = true
+        `,
+        [current.variant_id]
+      );
+
+      if (existingMainResult.rows.length === 0) {
+        const earliestActiveResult = await client.query(
+          `
+          SELECT id FROM collection_design_preview_images
+          WHERE variant_id = $1 AND is_active = true
+          ORDER BY sort_order ASC, id ASC
+          LIMIT 1
+          `,
+          [current.variant_id]
+        );
+
+        if (earliestActiveResult.rows.length > 0) {
+          await client.query(
+            "UPDATE collection_design_preview_images SET is_main = true WHERE id = $1",
+            [earliestActiveResult.rows[0].id]
+          );
+        }
+      }
+    }
+
+    const finalResult = await client.query(
+      "SELECT * FROM collection_design_preview_images WHERE id = $1",
+      [imageId]
+    );
+
+    await client.query("COMMIT");
+    res.json(finalResult.rows[0]);
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("Update preview image error:", err);
+    res.status(500).json({ error: "Server error" });
+  } finally {
+    client.release();
+  }
+});
+
+// PATCH /api/admin/customization/preview-images/:imageId/main
+router.patch("/preview-images/:imageId/main", async (req, res) => {
+  const { imageId } = req.params;
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const targetResult = await client.query(
+      "SELECT id, variant_id, is_active FROM collection_design_preview_images WHERE id = $1 FOR UPDATE",
+      [imageId]
+    );
+
+    if (targetResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Preview image not found" });
+    }
+
+    const target = targetResult.rows[0];
+
+    if (!target.is_active) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        error: "Cannot set an inactive image as main. Reactivate it first.",
+      });
+    }
+
+    // Clear the previous main before setting the new one — the partial
+    // unique index (WHERE is_main = true) only allows one is_main = true
+    // row per variant, so these must never overlap even momentarily.
+    await client.query(
+      "UPDATE collection_design_preview_images SET is_main = false WHERE variant_id = $1",
+      [target.variant_id]
+    );
+
+    const updateResult = await client.query(
+      "UPDATE collection_design_preview_images SET is_main = true WHERE id = $1 RETURNING *",
+      [imageId]
+    );
+
+    await client.query("COMMIT");
+    res.json(updateResult.rows[0]);
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("Set main preview image error:", err);
+    res.status(500).json({ error: "Server error" });
+  } finally {
+    client.release();
+  }
+});
+
+// PUT /api/admin/customization/variants/:variantId/preview-images/order
+// Optional batch endpoint: reordering is a single logical operation, and
+// without a transaction, N individual PATCH sort_order calls could leave
+// an inconsistent order if one request fails partway through a drag-reorder
+// UI action. The product gallery (admin.products.routes.js) has no
+// equivalent batch endpoint to mirror, so this follows the same
+// transaction/ownership-check conventions used elsewhere in this file.
+//
+// This is a full-gallery reorder, not a partial update: image_ids must
+// contain every preview image belonging to the variant (active AND
+// inactive) exactly once. A partial submission would leave omitted images
+// at their old sort_order, which can collide with the newly-assigned
+// values and produce a duplicate/ambiguous gallery order — so partial
+// lists are rejected outright rather than silently leaving stale entries.
+router.put("/variants/:variantId/preview-images/order", async (req, res) => {
+  const { variantId } = req.params;
+  const { image_ids } = req.body;
+
+  if (!Array.isArray(image_ids)) {
+    return res.status(400).json({ error: "image_ids must be an array" });
+  }
+
+  const parsedIds = image_ids.map((id) => Number(id));
+  for (const id of parsedIds) {
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({
+        error: "image_ids must contain only valid positive integers",
+      });
+    }
+  }
+
+  if (new Set(parsedIds).size !== parsedIds.length) {
+    return res.status(400).json({ error: "image_ids must not contain duplicates" });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const variantCheck = await client.query(
+      "SELECT id FROM collection_design_variants WHERE id = $1",
+      [variantId]
+    );
+    if (variantCheck.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Variant not found" });
+    }
+
+    // Never trust the supplied ids alone — the submitted set must exactly
+    // equal every image (active and inactive) that actually belongs to
+    // this variant: no id from another variant, no omitted id, no
+    // nonexistent id. An empty variant with an empty image_ids array
+    // naturally satisfies this (both sets are empty) and succeeds with an
+    // empty result — no images means there's nothing to reorder, so this
+    // isn't treated as an error case.
+    const existingResult = await client.query(
+      "SELECT id FROM collection_design_preview_images WHERE variant_id = $1",
+      [variantId]
+    );
+    const existingIds = existingResult.rows.map((row) => row.id);
+
+    const submittedSet = new Set(parsedIds);
+    const existingSet = new Set(existingIds);
+    const setsMatch =
+      submittedSet.size === existingSet.size &&
+      [...submittedSet].every((id) => existingSet.has(id));
+
+    if (!setsMatch) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        error:
+          "image_ids must contain every preview image for this variant exactly once",
+      });
+    }
+
+    for (let i = 0; i < parsedIds.length; i++) {
+      await client.query(
+        "UPDATE collection_design_preview_images SET sort_order = $1 WHERE id = $2",
+        [i, parsedIds[i]]
+      );
+    }
+
+    const finalResult = await client.query(
+      `
+      SELECT id, variant_id, image_url, sort_order, is_main, is_active, created_at
+      FROM collection_design_preview_images
+      WHERE variant_id = $1
+      ORDER BY is_main DESC, sort_order ASC, id ASC
+      `,
+      [variantId]
+    );
+
+    await client.query("COMMIT");
+    res.json(finalResult.rows);
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("Reorder variant preview images error:", err);
+    res.status(500).json({ error: "Server error" });
+  } finally {
+    client.release();
+  }
+});
+
 module.exports = router;
