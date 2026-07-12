@@ -53,6 +53,123 @@ function productMatchesSearch(product, normalizedTerm) {
   );
 }
 
+// Task K2: pure helpers for the variant inventory matrix — kept free of
+// component state so they're easy to reason about/test in isolation and
+// never mutate anything passed in (colors/sizes/variants all come straight
+// from the K1 GET .../inventory response).
+function inventoryComboKey(colorId, sizeId) {
+  return `${colorId === null || colorId === undefined ? "null" : colorId}:${sizeId}`;
+}
+
+// One row per size when the product has no active colors, otherwise one
+// row per color with one column per size — matches exactly what the K1
+// backend already considers "expected" for completeness.
+function buildExpectedCombinations(colors, sizes) {
+  if (!colors || colors.length === 0) {
+    return (sizes || []).map((size) => ({
+      color_id: null,
+      size_id: size.id,
+      color_name: null,
+      size_label: size.size_label,
+    }));
+  }
+
+  const combinations = [];
+  for (const color of colors) {
+    for (const size of sizes || []) {
+      combinations.push({
+        color_id: color.id,
+        size_id: size.id,
+        color_name: color.color_name,
+        size_label: size.size_label,
+      });
+    }
+  }
+  return combinations;
+}
+
+// Builds the editable draft from the current inventory response: existing
+// saved rows show their real quantity as a string, anything not yet saved
+// starts blank ("") rather than "0" — zero is only ever a value the owner
+// actually typed, never an assumption this code makes for them.
+function buildDraftFromInventory(inventoryData) {
+  if (!inventoryData) return {};
+
+  const expected = buildExpectedCombinations(
+    inventoryData.colors,
+    inventoryData.sizes
+  );
+  const savedByKey = new Map(
+    (inventoryData.variants || []).map((v) => [
+      inventoryComboKey(v.color_id, v.size_id),
+      v.stock_quantity,
+    ])
+  );
+
+  const draft = {};
+  for (const combo of expected) {
+    const key = inventoryComboKey(combo.color_id, combo.size_id);
+    const saved = savedByKey.get(key);
+    draft[key] = saved === undefined ? "" : String(saved);
+  }
+  return draft;
+}
+
+// Validates every expected combination has a blank-free, nonnegative,
+// whole-number entry, and returns the exact payload the PUT endpoint
+// expects. Returns { ok: false, error } on the first problem found.
+function validateInventoryDraft(inventoryData, draft) {
+  const expected = buildExpectedCombinations(
+    inventoryData?.colors,
+    inventoryData?.sizes
+  );
+
+  if (expected.length === 0) {
+    return { ok: false, error: "There are no active combinations to save." };
+  }
+
+  const variants = [];
+
+  for (const combo of expected) {
+    const key = inventoryComboKey(combo.color_id, combo.size_id);
+    const raw = draft[key];
+
+    if (raw === undefined || raw === null || String(raw).trim() === "") {
+      return {
+        ok: false,
+        error:
+          "Enter a nonnegative whole-number stock quantity for every active combination.",
+      };
+    }
+
+    const trimmed = String(raw).trim();
+    if (!/^\d+$/.test(trimmed)) {
+      return {
+        ok: false,
+        error:
+          "Enter a nonnegative whole-number stock quantity for every active combination.",
+      };
+    }
+
+    const stockQuantity = Number(trimmed);
+    if (!Number.isInteger(stockQuantity) || stockQuantity < 0) {
+      return {
+        ok: false,
+        error:
+          "Enter a nonnegative whole-number stock quantity for every active combination.",
+      };
+    }
+
+    variants.push({
+      color_id: combo.color_id,
+      size_id: combo.size_id,
+      stock_quantity: stockQuantity,
+    });
+  }
+
+  return { ok: true, variants };
+}
+
 export default function AdminProducts() {
   const navigate = useNavigate();
   const token = localStorage.getItem("token");
@@ -91,6 +208,18 @@ export default function AdminProducts() {
   const [editingColorId, setEditingColorId] = useState(null);
   const [editColorName, setEditColorName] = useState("");
   const [editColorHex, setEditColorHex] = useState("");
+
+  // Task K2: Variant Inventory — kept as its own isolated state group so it
+  // can be reset in one place (the editingProduct?.id effect below) without
+  // touching the unrelated colors/images state above.
+  const [inventoryData, setInventoryData] = useState(null);
+  const [inventoryLoading, setInventoryLoading] = useState(false);
+  const [inventoryError, setInventoryError] = useState("");
+  const [inventoryDraft, setInventoryDraft] = useState({});
+  const [inventoryDraftError, setInventoryDraftError] = useState("");
+  const [inventorySaving, setInventorySaving] = useState(false);
+  const [inventoryModeChanging, setInventoryModeChanging] = useState(false);
+  const [inventorySuccessMessage, setInventorySuccessMessage] = useState("");
 
   const fetchProducts = async () => {
     try {
@@ -450,6 +579,178 @@ export default function AdminProducts() {
     }
   };
 
+  // Task K2: Variant Inventory — GET reloads the whole panel from the
+  // server (source of truth) and rebuilds the draft from it, so a save or
+  // mode switch always ends up showing exactly what's actually stored.
+  const fetchInventory = async (productId) => {
+    try {
+      setInventoryLoading(true);
+      setInventoryError("");
+
+      const res = await fetch(
+        `${API_BASE}/admin/products/${productId}/inventory`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const data = await res.json();
+
+      if (!res.ok) {
+        setInventoryError(data.error || "Could not load inventory.");
+        setInventoryData(null);
+        setInventoryDraft({});
+        return;
+      }
+
+      setInventoryData(data);
+      setInventoryDraft(buildDraftFromInventory(data));
+    } catch (err) {
+      console.error("Fetch inventory error:", err);
+      setInventoryError("Something went wrong while loading inventory.");
+      setInventoryData(null);
+      setInventoryDraft({});
+    } finally {
+      setInventoryLoading(false);
+    }
+  };
+
+  const handleInventoryCellChange = (colorId, sizeId, value) => {
+    setInventoryDraftError("");
+    setInventorySuccessMessage("");
+    setInventoryDraft((prev) => ({
+      ...prev,
+      [inventoryComboKey(colorId, sizeId)]: value,
+    }));
+  };
+
+  const handleSaveInventoryMatrix = async () => {
+    if (!editingProduct || inventorySaving) return;
+
+    const validation = validateInventoryDraft(inventoryData, inventoryDraft);
+    if (!validation.ok) {
+      setInventoryDraftError(validation.error);
+      setInventorySuccessMessage("");
+      return;
+    }
+
+    setInventoryDraftError("");
+    setInventorySuccessMessage("");
+
+    try {
+      setInventorySaving(true);
+
+      const res = await fetch(
+        `${API_BASE}/admin/products/${editingProduct.id}/inventory/variants`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ variants: validation.variants }),
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setInventoryDraftError(data.error || "Could not save variant stock.");
+        return;
+      }
+
+      await fetchInventory(editingProduct.id);
+      setInventorySuccessMessage("Variant stock saved.");
+    } catch (err) {
+      console.error("Save inventory matrix error:", err);
+      setInventoryDraftError("Something went wrong while saving variant stock.");
+    } finally {
+      setInventorySaving(false);
+    }
+  };
+
+  const handleEnableVariantInventory = async () => {
+    if (!editingProduct || inventoryModeChanging || !inventoryData?.is_complete)
+      return;
+
+    const ok = window.confirm(
+      "Stock will now be tracked separately for each color and size. General stock will no longer control availability."
+    );
+    if (!ok) return;
+
+    try {
+      setInventoryModeChanging(true);
+      setInventoryDraftError("");
+      setInventorySuccessMessage("");
+
+      const res = await fetch(
+        `${API_BASE}/admin/products/${editingProduct.id}/inventory/mode`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ inventory_mode: "VARIANT" }),
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setInventoryDraftError(data.error || "Could not enable variant inventory.");
+        return;
+      }
+
+      await fetchInventory(editingProduct.id);
+      setInventorySuccessMessage("Variant inventory enabled.");
+    } catch (err) {
+      console.error("Enable variant inventory error:", err);
+      setInventoryDraftError("Something went wrong while enabling variant inventory.");
+    } finally {
+      setInventoryModeChanging(false);
+    }
+  };
+
+  const handleUseGeneralInventory = async () => {
+    if (!editingProduct || inventoryModeChanging) return;
+
+    const ok = window.confirm(
+      "Saved variant quantities will be kept, but general stock will become the active inventory again."
+    );
+    if (!ok) return;
+
+    try {
+      setInventoryModeChanging(true);
+      setInventoryDraftError("");
+      setInventorySuccessMessage("");
+
+      const res = await fetch(
+        `${API_BASE}/admin/products/${editingProduct.id}/inventory/mode`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ inventory_mode: "GENERAL" }),
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setInventoryDraftError(data.error || "Could not switch to general inventory.");
+        return;
+      }
+
+      await fetchInventory(editingProduct.id);
+      setInventorySuccessMessage("Now using general inventory.");
+    } catch (err) {
+      console.error("Use general inventory error:", err);
+      setInventoryDraftError("Something went wrong while switching inventory mode.");
+    } finally {
+      setInventoryModeChanging(false);
+    }
+  };
+
   const handleImageUpload = async () => {
     if (!uploadFile || !editingProduct) return;
 
@@ -559,6 +860,7 @@ export default function AdminProducts() {
       fetchProductImages(editingProduct.id);
       fetchProductColors(editingProduct.id);
       fetchManageColors(editingProduct.id);
+      fetchInventory(editingProduct.id);
     } else {
       setProductImages([]);
       setProductColors([]);
@@ -569,6 +871,14 @@ export default function AdminProducts() {
     setNewColorName("");
     setNewColorHex("");
     setEditingColorId(null);
+
+    // Task K2: never let Product A's inventory data/draft/messages survive
+    // into Product B's panel, or into no product being open at all.
+    setInventoryData(null);
+    setInventoryDraft({});
+    setInventoryError("");
+    setInventoryDraftError("");
+    setInventorySuccessMessage("");
   }, [editingProduct?.id]);
 
   const filterFilteredProducts = products.filter((product) =>
@@ -1093,6 +1403,244 @@ export default function AdminProducts() {
               )}
             </div>
 
+            {/* Task K2: Variant Inventory — owner-facing matrix built on
+                top of the Task K1 GET/PUT/PATCH inventory endpoints. Does
+                not affect Cart/checkout/customer pages in any way yet. */}
+            <div style={styles.inventorySection}>
+              <p style={styles.smallEyebrow}>Inventory</p>
+
+              {inventoryLoading ? (
+                <p style={styles.muted}>Loading inventory...</p>
+              ) : inventoryError ? (
+                <p style={{ ...styles.muted, color: "#b52a2a" }}>
+                  {inventoryError}
+                </p>
+              ) : !inventoryData ? null : (
+                <>
+                  <div style={styles.inventoryModeRow}>
+                    <span
+                      style={
+                        inventoryData.inventory_mode === "VARIANT"
+                          ? styles.mainBadge
+                          : styles.imageColorTag
+                      }
+                    >
+                      {inventoryData.inventory_mode === "VARIANT"
+                        ? "Variant inventory"
+                        : "General inventory"}
+                    </span>
+                    <span style={styles.muted}>
+                      General stock: {inventoryData.general_stock_quantity ?? 0}
+                    </span>
+                  </div>
+
+                  {inventoryData.inventory_mode === "GENERAL" && (
+                    <p style={styles.muted}>
+                      This product currently uses one stock quantity for all
+                      selections.
+                    </p>
+                  )}
+
+                  {inventoryData.sizes.length === 0 ? (
+                    <p style={{ ...styles.muted, marginTop: "10px" }}>
+                      Variant inventory requires configured sizes. This
+                      product must use General inventory.
+                    </p>
+                  ) : (
+                    <>
+                      <div style={styles.inventoryStatusRow}>
+                        <span
+                          style={
+                            inventoryData.is_complete
+                              ? styles.badgeGoodInline
+                              : styles.badgeWarningInline
+                          }
+                        >
+                          {inventoryData.is_complete
+                            ? "Inventory matrix complete"
+                            : `${inventoryData.configured_combinations} of ${inventoryData.expected_combinations} combinations configured`}
+                        </span>
+                      </div>
+
+                      {inventoryData.inventory_mode === "VARIANT" &&
+                        !inventoryData.is_complete && (
+                          <p style={styles.inventoryWarningBox}>
+                            Variant inventory is incomplete. Configure every
+                            active combination before customer inventory is
+                            enabled.
+                          </p>
+                        )}
+
+                      {inventoryData.inventory_mode === "GENERAL" && (
+                        <p style={styles.inventoryWarningBox}>
+                          General stock will not be copied automatically.
+                          Enter stock for every combination first.
+                        </p>
+                      )}
+
+                      <div style={styles.inventoryTableWrap}>
+                        <table style={styles.inventoryTable}>
+                          <thead>
+                            <tr>
+                              <th style={styles.inventoryTh}>
+                                {inventoryData.colors.length > 0
+                                  ? "Color"
+                                  : "Size"}
+                              </th>
+                              {inventoryData.colors.length > 0 &&
+                                inventoryData.sizes.map((size) => (
+                                  <th key={size.id} style={styles.inventoryTh}>
+                                    {size.size_label}
+                                  </th>
+                                ))}
+                              {inventoryData.colors.length === 0 && (
+                                <th style={styles.inventoryTh}>Stock</th>
+                              )}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {inventoryData.colors.length > 0
+                              ? inventoryData.colors.map((color) => (
+                                  <tr key={color.id}>
+                                    <td style={styles.inventoryTd}>
+                                      <span
+                                        style={{
+                                          ...styles.colorSwatch,
+                                          background: color.color_hex || "#eee",
+                                          marginRight: "8px",
+                                          verticalAlign: "middle",
+                                        }}
+                                      />
+                                      {color.color_name}
+                                    </td>
+                                    {inventoryData.sizes.map((size) => (
+                                      <td key={size.id} style={styles.inventoryTd}>
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          step="1"
+                                          style={styles.inventoryCellInput}
+                                          placeholder="—"
+                                          value={
+                                            inventoryDraft[
+                                              inventoryComboKey(color.id, size.id)
+                                            ] ?? ""
+                                          }
+                                          onChange={(e) =>
+                                            handleInventoryCellChange(
+                                              color.id,
+                                              size.id,
+                                              e.target.value
+                                            )
+                                          }
+                                        />
+                                      </td>
+                                    ))}
+                                  </tr>
+                                ))
+                              : inventoryData.sizes.map((size) => (
+                                  <tr key={size.id}>
+                                    <td style={styles.inventoryTd}>
+                                      {size.size_label}
+                                    </td>
+                                    <td style={styles.inventoryTd}>
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        step="1"
+                                        style={styles.inventoryCellInput}
+                                        placeholder="—"
+                                        value={
+                                          inventoryDraft[
+                                            inventoryComboKey(null, size.id)
+                                          ] ?? ""
+                                        }
+                                        onChange={(e) =>
+                                          handleInventoryCellChange(
+                                            null,
+                                            size.id,
+                                            e.target.value
+                                          )
+                                        }
+                                      />
+                                    </td>
+                                  </tr>
+                                ))}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      {!inventoryData.is_complete &&
+                        inventoryData.missing_combinations.length > 0 && (
+                          <p style={styles.muted}>
+                            Missing:{" "}
+                            {inventoryData.missing_combinations
+                              .map((combo) =>
+                                combo.color_name
+                                  ? `${combo.color_name} / ${combo.size_label}`
+                                  : combo.size_label
+                              )
+                              .join(", ")}
+                          </p>
+                        )}
+
+                      {inventoryDraftError && (
+                        <p style={styles.inventoryErrorBox}>
+                          {inventoryDraftError}
+                        </p>
+                      )}
+
+                      {inventorySuccessMessage && (
+                        <p style={styles.inventorySuccessBox}>
+                          {inventorySuccessMessage}
+                        </p>
+                      )}
+
+                      <div style={styles.inventoryActionsRow}>
+                        <button
+                          onClick={handleSaveInventoryMatrix}
+                          disabled={inventorySaving}
+                          style={styles.editBtn}
+                        >
+                          {inventorySaving ? "Saving..." : "Save variant stock"}
+                        </button>
+
+                        {inventoryData.inventory_mode === "GENERAL" ? (
+                          <button
+                            onClick={handleEnableVariantInventory}
+                            disabled={
+                              inventoryModeChanging || !inventoryData.is_complete
+                            }
+                            style={{
+                              ...styles.editBtn,
+                              opacity:
+                                inventoryModeChanging || !inventoryData.is_complete
+                                  ? 0.5
+                                  : 1,
+                              cursor:
+                                inventoryModeChanging || !inventoryData.is_complete
+                                  ? "not-allowed"
+                                  : "pointer",
+                            }}
+                          >
+                            Enable variant inventory
+                          </button>
+                        ) : (
+                          <button
+                            onClick={handleUseGeneralInventory}
+                            disabled={inventoryModeChanging}
+                            style={styles.editBtn}
+                          >
+                            Use general inventory
+                          </button>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+
             <div style={styles.imagesSection}>
               <p style={styles.smallEyebrow}>Product Images</p>
 
@@ -1463,6 +2011,108 @@ const styles = {
     marginTop: "24px",
     paddingTop: "20px",
     borderTop: "1px solid #eee",
+  },
+  // ---- Task K2: Variant Inventory ----
+  inventorySection: {
+    marginTop: "24px",
+    paddingTop: "20px",
+    borderTop: "1px solid #eee",
+  },
+  inventoryModeRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
+    flexWrap: "wrap",
+    marginBottom: "8px",
+  },
+  inventoryStatusRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    flexWrap: "wrap",
+    margin: "10px 0",
+  },
+  badgeGoodInline: {
+    display: "inline-block",
+    padding: "4px 9px",
+    fontSize: "11px",
+    letterSpacing: "0.06em",
+    background: "#eaf5ec",
+    color: "#1a7a45",
+  },
+  badgeWarningInline: {
+    display: "inline-block",
+    padding: "4px 9px",
+    fontSize: "11px",
+    letterSpacing: "0.06em",
+    background: "#fdf3e0",
+    color: "#b07d2a",
+  },
+  inventoryWarningBox: {
+    background: "#fff8e6",
+    border: "1px solid #e8d9a8",
+    color: "#8a6d1f",
+    fontSize: "12px",
+    padding: "10px 12px",
+    margin: "10px 0",
+  },
+  inventoryErrorBox: {
+    background: "#fbeaea",
+    border: "1px solid #f0b5b5",
+    color: "#b52a2a",
+    fontSize: "12px",
+    padding: "10px 12px",
+    margin: "10px 0",
+  },
+  inventorySuccessBox: {
+    background: "#eaf5ec",
+    border: "1px solid #b3ddc0",
+    color: "#1a7a45",
+    fontSize: "12px",
+    padding: "10px 12px",
+    margin: "10px 0",
+  },
+  inventoryTableWrap: {
+    overflowX: "auto",
+    marginTop: "8px",
+    border: "1px solid #eee",
+  },
+  inventoryTable: {
+    borderCollapse: "collapse",
+    width: "100%",
+    minWidth: "360px",
+    fontFamily: "Georgia, serif",
+    fontSize: "13px",
+  },
+  inventoryTh: {
+    textAlign: "left",
+    padding: "10px 12px",
+    borderBottom: "1px solid #ddd",
+    background: "#faf9f7",
+    fontSize: "11px",
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: "#888",
+    whiteSpace: "nowrap",
+  },
+  inventoryTd: {
+    padding: "8px 12px",
+    borderBottom: "1px solid #f0f0f0",
+    whiteSpace: "nowrap",
+  },
+  inventoryCellInput: {
+    width: "64px",
+    padding: "7px 8px",
+    border: "1px solid #ddd",
+    fontFamily: "Georgia, serif",
+    fontSize: "13px",
+    textAlign: "center",
+  },
+  inventoryActionsRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "10px",
+    marginTop: "14px",
   },
   imageThumbRow: {
     display: "flex",
