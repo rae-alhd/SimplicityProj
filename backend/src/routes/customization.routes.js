@@ -157,12 +157,113 @@ router.get("/products/:productId", async (req, res) => {
       [collectionIds]
     );
 
+    // Customer-ready variants: active variant + active color belonging to
+    // THIS product (never trust design_id alone — re-anchor to productId
+    // here too) + design_id restricted to this product's own active
+    // designs. Readiness rule 1 (collection active) and rule 2 (design
+    // active) are already guaranteed by collectionsResult/designsResult
+    // above only ever containing active rows.
+    const designIds = designsResult.rows.map((d) => d.id);
+    const variantsResult = await pool.query(
+      `
+      SELECT
+        cdv.id,
+        cdv.design_id,
+        cdv.color_id,
+        cdv.sort_order,
+        c.color_name,
+        c.color_hex
+      FROM collection_design_variants cdv
+      JOIN customizable_product_colors c ON c.id = cdv.color_id
+      WHERE cdv.is_active = true
+        AND c.is_active = true
+        AND c.product_id = $1
+        AND cdv.design_id = ANY($2::int[])
+      ORDER BY cdv.design_id ASC, cdv.sort_order ASC, cdv.id ASC
+      `,
+      [productId, designIds]
+    );
+
+    const variantIds = variantsResult.rows.map((v) => v.id);
+
+    const sizeRestrictionsResult = await pool.query(
+      `
+      SELECT variant_id, size_id
+      FROM collection_design_variant_sizes
+      WHERE variant_id = ANY($1::int[])
+      ORDER BY variant_id ASC, size_id ASC
+      `,
+      [variantIds]
+    );
+
+    const previewImagesResult = await pool.query(
+      `
+      SELECT id, variant_id, image_url, sort_order, is_main
+      FROM collection_design_preview_images
+      WHERE is_active = true AND variant_id = ANY($1::int[])
+      ORDER BY variant_id ASC, is_main DESC, sort_order ASC, id ASC
+      `,
+      [variantIds]
+    );
+
+    const sizeIdsByVariant = {};
+    for (const row of sizeRestrictionsResult.rows) {
+      if (!sizeIdsByVariant[row.variant_id]) {
+        sizeIdsByVariant[row.variant_id] = [];
+      }
+      sizeIdsByVariant[row.variant_id].push(row.size_id);
+    }
+
+    const previewImagesByVariant = {};
+    for (const row of previewImagesResult.rows) {
+      if (!previewImagesByVariant[row.variant_id]) {
+        previewImagesByVariant[row.variant_id] = [];
+      }
+      previewImagesByVariant[row.variant_id].push({
+        id: row.id,
+        image_url: row.image_url,
+        sort_order: row.sort_order,
+        is_main: row.is_main,
+      });
+    }
+
+    // Readiness rule 5: a variant with zero active preview images is not
+    // customer-ready and is dropped entirely — not just given an empty
+    // preview_images array.
+    const readyVariantsByDesign = {};
+    for (const variant of variantsResult.rows) {
+      const previewImages = previewImagesByVariant[variant.id] || [];
+      if (previewImages.length === 0) continue;
+
+      if (!readyVariantsByDesign[variant.design_id]) {
+        readyVariantsByDesign[variant.design_id] = [];
+      }
+
+      // previewImages is already ordered is_main DESC, sort_order ASC, id
+      // ASC by the query above, so [0] is the main image if one exists,
+      // otherwise the first active image by display order — the same
+      // fail-safe fallback resolveMainImageUrl() uses elsewhere.
+      readyVariantsByDesign[variant.design_id].push({
+        id: variant.id,
+        color_id: variant.color_id,
+        color_name: variant.color_name,
+        color_hex: variant.color_hex,
+        sort_order: variant.sort_order,
+        allowed_size_ids: sizeIdsByVariant[variant.id] || [],
+        preview_images: previewImages,
+        main_preview_image_url: previewImages[0].image_url,
+      });
+    }
+
     const designsByCollection = {};
     for (const design of designsResult.rows) {
       if (!designsByCollection[design.collection_id]) {
         designsByCollection[design.collection_id] = [];
       }
-      designsByCollection[design.collection_id].push(design);
+      designsByCollection[design.collection_id].push({
+        ...design,
+        variants: readyVariantsByDesign[design.id] || [],
+      });
     }
 
     const collections = collectionsResult.rows.map((collection) => ({
