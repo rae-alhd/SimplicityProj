@@ -44,4 +44,4 @@ function attachImageData(products, imageRows) {
   });
 }
 
-module.exports = { attachImageData };
+module.exports = { attachImageData, groupImagesByProduct, resolveMainImageUrl };

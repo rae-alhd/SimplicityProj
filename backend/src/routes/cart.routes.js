@@ -2,6 +2,10 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
 const { authMiddleware } = require("../middleware/auth.middleware");
+const {
+  groupImagesByProduct,
+  resolveMainImageUrl,
+} = require("../utils/productImages");
 
 // ✅ TEST
 router.get("/test", (req, res) => {
@@ -63,7 +67,65 @@ products.stock_quantity
       [user_id]
     );
 
-    res.json(result.rows);
+    const cartRows = result.rows;
+    const productIds = [...new Set(cartRows.map((row) => row.product_id))];
+
+    const imagesResult = await pool.query(
+      `
+      SELECT id, product_id, image_url, sort_order, is_main, color_id
+      FROM product_images
+      WHERE is_active = true AND product_id = ANY($1::int[])
+      ORDER BY product_id ASC, sort_order ASC, id ASC
+      `,
+      [productIds]
+    );
+    const imagesByProduct = groupImagesByProduct(imagesResult.rows);
+
+    // cart_items.color is a free-text snapshot (e.g. "black"), not a
+    // color_id — resolve it back to the product's actual color_id so a
+    // color-specific gallery image can be preferred over the general one.
+    // Reliable as long as the color name hasn't been renamed since this
+    // item was added (same assumption the rest of the app already makes
+    // by storing color as text instead of an id).
+    const colorsResult = await pool.query(
+      `
+      SELECT id, product_id, color_name
+      FROM customizable_product_colors
+      WHERE product_id = ANY($1::int[])
+      `,
+      [productIds]
+    );
+    const colorIdByProductAndName = new Map(
+      colorsResult.rows.map((row) => [
+        `${row.product_id}::${row.color_name}`,
+        row.id,
+      ])
+    );
+
+    const cartRowsWithImages = cartRows.map((row) => {
+      const productImages = imagesByProduct.get(row.product_id) || [];
+
+      const matchedColorId = row.color
+        ? colorIdByProductAndName.get(`${row.product_id}::${row.color}`)
+        : undefined;
+
+      const colorImages =
+        matchedColorId !== undefined
+          ? productImages.filter(
+              (img) => Number(img.color_id) === Number(matchedColorId)
+            )
+          : [];
+
+      const relevantImages =
+        colorImages.length > 0 ? colorImages : productImages;
+
+      return {
+        ...row,
+        main_image_url: resolveMainImageUrl(relevantImages, row.image_url),
+      };
+    });
+
+    res.json(cartRowsWithImages);
   } catch (err) {
     console.error("Get cart error:", err);
     res.status(500).json({ error: "Server error" });

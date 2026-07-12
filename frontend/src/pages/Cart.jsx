@@ -330,9 +330,9 @@ function CartItem({ item, onChangeQty, onRemove }) {
     <div style={styles.card}>
       {/* Image placeholder — swap with <img> once you have product images */}
       <div style={styles.imagePlaceholder}>
-        {item.image_url ? (
+        {item.main_image_url || item.image_url ? (
           <img
-            src={item.image_url}
+            src={item.main_image_url || item.image_url}
             alt={item.product_name}
             style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "8px" }}
           />
