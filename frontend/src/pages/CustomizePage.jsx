@@ -3,6 +3,11 @@ import { useNavigate } from "react-router-dom";
 import API_BASE from "../config/api";
 import ImageGallery from "../components/ImageGallery";
 import { getActiveGallery } from "../utils/productGallery";
+import {
+  getCompatibleVariant,
+  getCompatibleDesigns,
+  getCompatibleCollections,
+} from "../utils/designCompatibility";
 
 // /api/customization/products and /api/customization/products/:id do not
 // currently select stock_quantity, so this only takes effect once that field
@@ -24,6 +29,7 @@ function CustomizePage() {
   const [selectedOption, setSelectedOption] = useState(null);
   const [selectedCollectionId, setSelectedCollectionId] = useState(null);
   const [selectedDesign, setSelectedDesign] = useState(null);
+  const [selectedDesignVariant, setSelectedDesignVariant] = useState(null);
   const [quantity, setQuantity] = useState(1);
 
   const [loadingProducts, setLoadingProducts] = useState(true);
@@ -70,18 +76,31 @@ function CustomizePage() {
       .then((data) => {
         setConfig(data);
 
-        setSelectedColor(data.colors?.[0] || null);
-        setSelectedSize(data.sizes?.[0] || null);
+        const initialColor = data.colors?.[0] || null;
+        const initialSize = data.sizes?.[0] || null;
+        const initialHasSizes = (data.sizes || []).length > 0;
+
+        setSelectedColor(initialColor);
+        setSelectedSize(initialSize);
         setSelectedOption(data.options?.[0] || null);
         setQuantity(1);
 
-        const firstCollectionWithDesigns = (data.collections || []).find(
-          (c) => c.designs && c.designs.length > 0
-        );
+        // Auto-select the first collection that's actually compatible with
+        // the auto-selected color/size — the old "first collection with any
+        // designs" check didn't account for compatibility and could land on
+        // a collection with nothing valid to show.
+        const firstCompatibleCollection = getCompatibleCollections(
+          data.collections || [],
+          initialColor,
+          initialSize,
+          initialHasSizes
+        )[0];
+
         setSelectedCollectionId(
-          firstCollectionWithDesigns ? firstCollectionWithDesigns.id : null
+          firstCompatibleCollection ? firstCompatibleCollection.id : null
         );
         setSelectedDesign(null);
+        setSelectedDesignVariant(null);
         setIsDesignPickerOpen(false);
 
         setLoadingConfig(false);
@@ -93,20 +112,64 @@ function CustomizePage() {
   }, [selectedProductId]);
 
   function selectCollection(collectionId) {
+    // Only preserve the current design/variant if it already belonged to
+    // the collection being (re)selected — otherwise both are stale.
+    const preserveDesign =
+      selectedDesign && selectedDesign.collection_id === collectionId;
+
     setSelectedCollectionId(collectionId);
-    setSelectedDesign((current) =>
-      current && current.collection_id === collectionId ? current : null
-    );
+    setSelectedDesign(preserveDesign ? selectedDesign : null);
+    setSelectedDesignVariant(preserveDesign ? selectedDesignVariant : null);
+  }
+
+  function handleColorSelect(color) {
+    setSelectedColor(color);
+    // Color changed: any collection/design/variant chosen for the previous
+    // color may no longer be compatible — clear all of it rather than risk
+    // showing a hidden/incompatible selection.
+    setSelectedCollectionId(null);
+    setSelectedDesign(null);
+    setSelectedDesignVariant(null);
+  }
+
+  function handleSizeSelect(size) {
+    setSelectedSize(size);
+    setSelectedCollectionId(null);
+    setSelectedDesign(null);
+    setSelectedDesignVariant(null);
   }
 
   const product = config?.product;
+  const hasColors = Array.isArray(config?.colors) && config.colors.length > 0;
+  const hasSizes = Array.isArray(config?.sizes) && config.sizes.length > 0;
 
-  const collectionsWithDesigns = (config?.collections || []).filter(
+  // "Has anything configured at all" (ignores compatibility) controls
+  // whether the design section renders at all — a product with zero design
+  // collections simply doesn't need one, same as before this task.
+  const hasAnyDesignsConfigured = (config?.collections || []).some(
     (c) => c.designs && c.designs.length > 0
   );
-  const showDesignSection = collectionsWithDesigns.length > 0;
-  const activeCollection = (config?.collections || []).find(
+  const showDesignSection = hasAnyDesignsConfigured;
+
+  const compatibleCollections = useMemo(
+    () =>
+      getCompatibleCollections(
+        config?.collections,
+        selectedColor,
+        selectedSize,
+        hasSizes
+      ),
+    [config, selectedColor, selectedSize, hasSizes]
+  );
+
+  const activeCollection = compatibleCollections.find(
     (c) => c.id === selectedCollectionId
+  );
+
+  const compatibleDesignsForActiveCollection = useMemo(
+    () =>
+      getCompatibleDesigns(activeCollection, selectedColor, selectedSize, hasSizes),
+    [activeCollection, selectedColor, selectedSize, hasSizes]
   );
 
   const totalPrice = useMemo(() => {
@@ -129,8 +192,25 @@ function CustomizePage() {
       return;
     }
 
-    if (!product || !selectedColor || !selectedSize || !selectedOption) {
+    if (
+      !product ||
+      (hasColors && !selectedColor) ||
+      (hasSizes && !selectedSize) ||
+      !selectedOption
+    ) {
       alert("Please choose product, color, size, and customization option.");
+      return;
+    }
+
+    // A design was picked but no compatible variant could be resolved for
+    // it (e.g. a stale selection somehow survived a color/size change) —
+    // block only this case. Products/flows that never require a design at
+    // all are untouched: selectedDesign stays null for them, so this check
+    // never fires.
+    if (selectedDesign && !selectedDesignVariant) {
+      alert(
+        "The selected design is no longer available for this color and size. Please choose another design."
+      );
       return;
     }
 
@@ -150,8 +230,8 @@ function CustomizePage() {
         },
         body: JSON.stringify({
           product_id: product.id,
-          color: selectedColor.color_name,
-          size: selectedSize.size_label,
+          color: selectedColor?.color_name || "Default",
+          size: selectedSize?.size_label || null,
           quantity,
           is_customized: true,
           customization_option_id: selectedOption.id,
@@ -372,7 +452,7 @@ function CustomizePage() {
                   {config?.colors?.map((c) => (
                     <button
                       key={c.id}
-                      onClick={() => setSelectedColor(c)}
+                      onClick={() => handleColorSelect(c)}
                       title={c.color_name}
                       style={{
                         ...styles.swatch,
@@ -394,7 +474,7 @@ function CustomizePage() {
                   {config?.sizes?.map((s) => (
                     <button
                       key={s.id}
-                      onClick={() => setSelectedSize(s)}
+                      onClick={() => handleSizeSelect(s)}
                       style={{
                         ...styles.sizeBtn,
                         background: selectedSize?.id === s.id ? "#111" : "#fff",
@@ -411,10 +491,16 @@ function CustomizePage() {
                 <div style={styles.controlBlock}>
                   <label style={styles.label}>Choose Your Design</label>
 
-                  {isDesignPickerOpen ? (
+                  {compatibleCollections.length === 0 ? (
+                    <p style={styles.muted}>
+                      {hasSizes
+                        ? "No designs are currently available for this color and size."
+                        : "No designs are currently available for this color."}
+                    </p>
+                  ) : isDesignPickerOpen ? (
                     <>
                       <div style={styles.collectionTabs}>
-                        {config.collections.map((collection) => (
+                        {compatibleCollections.map((collection) => (
                           <button
                             key={collection.id}
                             onClick={() => selectCollection(collection.id)}
@@ -436,17 +522,25 @@ function CustomizePage() {
                       </div>
 
                       {activeCollection &&
-                        (activeCollection.designs.length === 0 ? (
+                        (compatibleDesignsForActiveCollection.length === 0 ? (
                           <p style={styles.muted}>
-                            No designs available in this collection yet.
+                            No compatible designs are available in this
+                            collection.
                           </p>
                         ) : (
                           <div style={styles.designCardGrid}>
-                            {activeCollection.designs.map((design) => (
+                            {compatibleDesignsForActiveCollection.map((design) => (
                               <button
                                 key={design.id}
                                 onClick={() => {
+                                  const variant = getCompatibleVariant(
+                                    design,
+                                    selectedColor,
+                                    selectedSize,
+                                    hasSizes
+                                  );
                                   setSelectedDesign(design);
+                                  setSelectedDesignVariant(variant);
                                   setIsDesignPickerOpen(false);
                                 }}
                                 style={{
