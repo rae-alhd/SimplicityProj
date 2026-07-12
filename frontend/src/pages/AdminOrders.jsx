@@ -122,6 +122,7 @@ function OrderCard({
         <div style={s.cardHeaderLeft}>
           <span style={s.orderId}>#{String(order.id).padStart(5, "0")}</span>
           <span style={s.dateTag}>{formattedDate}</span>
+          {order.is_gift && <span style={s.giftBadge}>🎁 Gift order</span>}
         </div>
         <div style={s.cardHeaderRight}>
           <span style={{ ...s.statusPill, ...STATUS_STYLES[status] }}>
@@ -739,7 +740,12 @@ const s = {
     paddingBottom: "16px",
     borderBottom: "1px solid #f0ece6",
   },
-  cardHeaderLeft: { display: "flex", alignItems: "center", gap: "14px" },
+  cardHeaderLeft: {
+    display: "flex",
+    alignItems: "center",
+    gap: "14px",
+    flexWrap: "wrap",
+  },
   cardHeaderRight: {
     display: "flex",
     flexDirection: "column",
@@ -758,6 +764,20 @@ const s = {
   },
   stockBadgePending: {
     color: "#b07d2a",
+  },
+  giftBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "5px",
+    padding: "3px 10px",
+    background: "#faf7f2",
+    color: "#9b7d3f",
+    border: "1px solid #e8d9a8",
+    fontSize: "0.66rem",
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    fontFamily: "sans-serif",
+    fontWeight: "600",
   },
   orderId: {
     fontFamily: "monospace",

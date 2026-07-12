@@ -300,13 +300,22 @@ async function attachOrderItemDesignFields(items) {
 ───────────────────────────────────────────── */
 router.post("/", authMiddleware, async (req, res) => {
   const userId = req.user.id;
-  const { customer_name, phone, address, notes } = req.body;
+  const { customer_name, phone, address, notes, is_gift } = req.body;
 
   if (!customer_name || !address) {
     return res
       .status(400)
       .json({ error: "customer_name and address are required." });
   }
+
+  // Task J1: whole-order gift flag. Omitted or false both mean false; only
+  // a strict JSON boolean true is accepted as true — no truthy-string
+  // coercion ("yes"/"1"/"true"), since no such convention exists elsewhere
+  // in this codebase. Anything else is a clear 400, not a silent guess.
+  if (is_gift !== undefined && typeof is_gift !== "boolean") {
+    return res.status(400).json({ error: "is_gift must be a boolean." });
+  }
+  const isGift = is_gift === true;
 
   const client = await pool.connect();
 
@@ -439,10 +448,18 @@ const cartResult = await client.query(
 
     // 3. Create the order
     const orderResult = await client.query(
-      `INSERT INTO orders (user_id, customer_name, phone, address, notes, total_price, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+      `INSERT INTO orders (user_id, customer_name, phone, address, notes, total_price, status, is_gift)
+       VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)
        RETURNING *`,
-      [userId, customer_name, phone || null, address, notes || null, totalPrice.toFixed(2)]
+      [
+        userId,
+        customer_name,
+        phone || null,
+        address,
+        notes || null,
+        totalPrice.toFixed(2),
+        isGift,
+      ]
     );
 
     const order = orderResult.rows[0];

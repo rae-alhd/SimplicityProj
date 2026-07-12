@@ -15,6 +15,9 @@ export default function Checkout({ fetchCart }) {
     address: "",
     notes: "",
   });
+  // Task J1: whole-order gift flag — only reset on a successful order
+  // submission (see handleSubmit), never on a failed attempt.
+  const [isGift, setIsGift] = useState(false);
 
   const token = localStorage.getItem("token");
 
@@ -79,6 +82,7 @@ export default function Checkout({ fetchCart }) {
           phone: form.phone,
           address: form.address,
           notes: form.notes,
+          is_gift: isGift,
           items: cartItems.map((item) => ({
             product_id: item.product_id,
             quantity: item.quantity,
@@ -203,6 +207,33 @@ export default function Checkout({ fetchCart }) {
       minHeight: "90px",
       transition: "border-color 0.2s",
       boxSizing: "border-box",
+    },
+    giftRow: {
+      marginBottom: "22px",
+    },
+    giftLabel: {
+      display: "flex",
+      alignItems: "center",
+      gap: "10px",
+      fontSize: "0.85rem",
+      color: "#1a1a1a",
+      letterSpacing: "0.02em",
+      cursor: "pointer",
+      fontFamily: "'Georgia', serif",
+    },
+    giftCheckbox: {
+      width: "16px",
+      height: "16px",
+      accentColor: "#1a1a1a",
+      cursor: "pointer",
+      flexShrink: 0,
+    },
+    giftHint: {
+      fontSize: "0.75rem",
+      color: "#aaa",
+      marginTop: "6px",
+      marginLeft: "26px",
+      fontFamily: "sans-serif",
     },
     paymentNote: {
       marginTop: "28px",
@@ -397,6 +428,24 @@ export default function Checkout({ fetchCart }) {
                   onFocus={(e) => (e.target.style.borderColor = "#c8b99a")}
                   onBlur={(e) => (e.target.style.borderColor = "#ddd8d0")}
                 />
+              </div>
+
+              {/* Task J1: whole-order gift flag */}
+              <div style={styles.giftRow}>
+                <label style={styles.giftLabel}>
+                  <input
+                    type="checkbox"
+                    checked={isGift}
+                    onChange={(e) => setIsGift(e.target.checked)}
+                    style={styles.giftCheckbox}
+                  />
+                  This order is a gift
+                </label>
+                {isGift && (
+                  <p style={styles.giftHint}>
+                    We'll mark it for gift preparation.
+                  </p>
+                )}
               </div>
 
               {/* Payment notice */}

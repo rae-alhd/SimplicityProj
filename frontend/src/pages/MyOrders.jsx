@@ -29,6 +29,12 @@ function StatusBadge({ status }) {
   );
 }
 
+// Task J1: small subtle badge, only rendered when order.is_gift is true —
+// no visual change at all for ordinary orders.
+function GiftBadge() {
+  return <span style={s.giftBadge}>🎁 Gift order</span>;
+}
+
 function OrderCard({ order }) {
   const [expanded, setExpanded] = useState(false);
   const items = Array.isArray(order.items) ? order.items : [];
@@ -52,6 +58,7 @@ function OrderCard({ order }) {
             <span style={s.orderNum}>Order #{String(order.id).padStart(5, "0")}</span>
             <span style={s.orderDate}>{date}</span>
           </div>
+          {order.is_gift && <GiftBadge />}
         </div>
         <StatusBadge status={order.status} />
       </div>
@@ -405,6 +412,20 @@ const s = {
     fontSize: "0.72rem",
     color: "#aaa",
     letterSpacing: "0.08em",
+    fontFamily: "sans-serif",
+  },
+  giftBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "5px",
+    width: "fit-content",
+    padding: "3px 10px",
+    background: "#faf7f2",
+    color: "#9b7d3f",
+    border: "1px solid #e8d9a8",
+    fontSize: "0.62rem",
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
     fontFamily: "sans-serif",
   },
 
