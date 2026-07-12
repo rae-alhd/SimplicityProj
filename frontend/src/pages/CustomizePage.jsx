@@ -182,7 +182,36 @@ function CustomizePage() {
     return (base + productExtra + optionExtra) * quantity;
   }, [product, selectedOption, quantity]);
 
-  const activeGallery = getActiveGallery(product, selectedColor);
+  // Base product/color gallery — exactly the existing behavior, unchanged.
+  const baseGallery = getActiveGallery(product, selectedColor);
+
+  // The backend already returns preview_images ordered main-first, then
+  // sort_order, then id — used exactly as received, never re-sorted or
+  // mutated here.
+  const designPreviewGallery = selectedDesignVariant?.preview_images || [];
+
+  // A design is only "showing" its own gallery when a variant is selected
+  // AND it actually has images. Public-ready variants should always have
+  // at least one, but this still fails safely to the base gallery instead
+  // of ever rendering a blank/broken stage if that assumption is ever
+  // violated.
+  const isShowingDesignGallery =
+    Boolean(selectedDesignVariant) && designPreviewGallery.length > 0;
+
+  const activeGallery = isShowingDesignGallery ? designPreviewGallery : baseGallery;
+
+  // Forces ImageGallery to remount (and reset to its first image) whenever
+  // the underlying gallery source actually changes — a different design's
+  // preview set, a different color's base gallery, or falling back from
+  // one to the other.
+  const galleryKey = isShowingDesignGallery
+    ? `design-${selectedDesignVariant.id}`
+    : `base-${product?.id ?? "none"}-${selectedColor?.id ?? "none"}`;
+
+  function handleClearDesignPreview() {
+    setSelectedDesign(null);
+    setSelectedDesignVariant(null);
+  }
 
   const handleAddToCart = async () => {
     const token = localStorage.getItem("token");
@@ -297,11 +326,33 @@ function CustomizePage() {
 
           <div style={styles.previewStage}>
             <ImageGallery
-              key={`${product?.id ?? "none"}-${selectedColor?.id ?? "none"}`}
+              key={galleryKey}
               images={activeGallery}
-              altText={product?.name || "Product"}
+              altText={
+                isShowingDesignGallery
+                  ? `${selectedDesign?.name || "Design"} on ${
+                      selectedColor?.color_name || "selected color"
+                    }`
+                  : product?.name || "Product"
+              }
               stageStyle={styles.gallerySlot}
             />
+
+            {isShowingDesignGallery && (
+              <div style={styles.designPreviewNotice}>
+                <span>
+                  Previewing {selectedDesign?.name} on{" "}
+                  {selectedColor?.color_name}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleClearDesignPreview}
+                  style={styles.clearDesignPreviewBtn}
+                >
+                  View product without design
+                </button>
+              </div>
+            )}
 
             <div style={styles.previewInfo}>
               <strong>{product?.name || "Custom Hoodie"}</strong>
@@ -728,6 +779,27 @@ const styles = {
   gallerySlot: {
     maxWidth: "440px",
     margin: "0 auto",
+  },
+  designPreviewNotice: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "12px",
+    flexWrap: "wrap",
+    textAlign: "center",
+    fontSize: "12px",
+    letterSpacing: "0.04em",
+    color: "#9b8c73",
+  },
+  clearDesignPreviewBtn: {
+    background: "none",
+    border: "none",
+    borderBottom: "1px solid #9b8c73",
+    color: "#9b8c73",
+    cursor: "pointer",
+    fontFamily: "Georgia, serif",
+    fontSize: "12px",
+    padding: 0,
   },
   previewInfo: {
     display: "flex",
