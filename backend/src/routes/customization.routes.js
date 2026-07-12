@@ -147,12 +147,21 @@ router.get("/products/:productId", async (req, res) => {
     );
 
     const collectionIds = collectionsResult.rows.map((c) => c.id);
+    // Task I1: each design carries its owner-assigned placement/customization
+    // option (design_placement_id / label) so the customer no longer picks a
+    // possibly-conflicting placement independently — Task I2 wires that up
+    // on the frontend. LEFT JOIN so a legacy design with no option assigned
+    // yet still returns (with both fields null) instead of being dropped.
     const designsResult = await pool.query(
       `
-      SELECT id, collection_id, name, image_url, sort_order, is_active
-      FROM collection_designs
-      WHERE is_active = true AND collection_id = ANY($1::int[])
-      ORDER BY collection_id ASC, sort_order ASC, id ASC
+      SELECT
+        cd.id, cd.collection_id, cd.name, cd.image_url, cd.sort_order, cd.is_active,
+        cd.customization_option_id,
+        co.option_label AS customization_option_name
+      FROM collection_designs cd
+      LEFT JOIN customization_options co ON co.id = cd.customization_option_id
+      WHERE cd.is_active = true AND cd.collection_id = ANY($1::int[])
+      ORDER BY cd.collection_id ASC, cd.sort_order ASC, cd.id ASC
       `,
       [collectionIds]
     );

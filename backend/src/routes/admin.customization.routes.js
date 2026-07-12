@@ -661,6 +661,65 @@ async function ensureCollectionExists(req, res, next) {
   }
 }
 
+// Task I1: shared query fragment so every place that returns a design also
+// returns its assigned placement/customization option label. LEFT JOIN so a
+// legacy design with customization_option_id = null still returns (with
+// customization_option_name: null) instead of being dropped or crashing.
+const DESIGN_SELECT_WITH_OPTION = `
+  SELECT
+    cd.*,
+    co.option_label AS customization_option_name
+  FROM collection_designs cd
+  LEFT JOIN customization_options co ON co.id = cd.customization_option_id
+`;
+
+// Resolves the product_id a design (or a to-be-created design under a given
+// collection) belongs to, via collection_designs -> design_collections.
+async function getCollectionProductId(collectionId) {
+  const result = await pool.query(
+    "SELECT product_id FROM design_collections WHERE id = $1",
+    [collectionId]
+  );
+  return result.rows[0]?.product_id ?? null;
+}
+
+// Task I1: validates a submitted customization_option_id for a design.
+// - undefined (field omitted entirely) -> "leave unchanged" for PATCH, or
+//   "no placement" for POST; caller distinguishes via hasOwnProperty.
+// - null / "" -> explicitly clear the placement.
+// - otherwise -> must be an integer referencing an ACTIVE option belonging
+//   to the SAME product as the design's collection. Product A's option can
+//   never be attached to Product B's design.
+// Returns { ok: true, value: number|null } or { ok: false, error }.
+async function resolveDesignOptionId(productId, rawValue) {
+  if (rawValue === null || rawValue === "" || rawValue === undefined) {
+    return { ok: true, value: null };
+  }
+
+  const optionId = Number(rawValue);
+  if (!Number.isInteger(optionId)) {
+    return {
+      ok: false,
+      error: "customization_option_id must be an integer or null",
+    };
+  }
+
+  const optionResult = await pool.query(
+    "SELECT id FROM customization_options WHERE id = $1 AND is_active = true AND product_id = $2",
+    [optionId, productId]
+  );
+
+  if (optionResult.rows.length === 0) {
+    return {
+      ok: false,
+      error:
+        "customization_option_id must reference an active option belonging to this design's product",
+    };
+  }
+
+  return { ok: true, value: optionId };
+}
+
 // GET /api/admin/customization/collections/:collectionId/designs
 router.get(
   "/collections/:collectionId/designs",
@@ -669,10 +728,9 @@ router.get(
     try {
       const result = await pool.query(
         `
-        SELECT *
-        FROM collection_designs
-        WHERE collection_id = $1
-        ORDER BY sort_order ASC, id ASC
+        ${DESIGN_SELECT_WITH_OPTION}
+        WHERE cd.collection_id = $1
+        ORDER BY cd.sort_order ASC, cd.id ASC
         `,
         [req.params.collectionId]
       );
@@ -703,24 +761,47 @@ router.post(
         return res.status(400).json({ error: "image file is required" });
       }
 
-      const { name, sort_order = 0 } = req.body;
+      const { name, sort_order = 0, customization_option_id } = req.body;
 
       if (!name) {
         fs.unlink(req.file.path, () => {});
         return res.status(400).json({ error: "name is required" });
       }
 
+      const productId = await getCollectionProductId(req.params.collectionId);
+
+      const optionResolution = await resolveDesignOptionId(
+        productId,
+        customization_option_id
+      );
+
+      if (!optionResolution.ok) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(400).json({ error: optionResolution.error });
+      }
+
       const baseUrl = getPublicBaseUrl(req);
       const imageUrl = `${baseUrl}/uploads/designs/${req.file.filename}`;
 
-      const result = await pool.query(
+      const insertResult = await pool.query(
         `
         INSERT INTO collection_designs
-        (collection_id, name, image_url, sort_order)
-        VALUES ($1, $2, $3, $4)
-        RETURNING *
+        (collection_id, name, image_url, sort_order, customization_option_id)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id
         `,
-        [req.params.collectionId, name, imageUrl, sort_order]
+        [
+          req.params.collectionId,
+          name,
+          imageUrl,
+          sort_order,
+          optionResolution.value,
+        ]
+      );
+
+      const result = await pool.query(
+        `${DESIGN_SELECT_WITH_OPTION} WHERE cd.id = $1`,
+        [insertResult.rows[0].id]
       );
 
       res.status(201).json(result.rows[0]);
@@ -739,22 +820,69 @@ router.patch("/designs/:id", async (req, res) => {
   try {
     const { name, sort_order, is_active } = req.body;
 
-    const result = await pool.query(
+    // customization_option_id uses hasOwnProperty (not just truthiness) so
+    // the owner can explicitly clear a design's placement back to null —
+    // COALESCE-against-undefined (like the other fields above) can't tell
+    // "field omitted" apart from "field explicitly set to null".
+    const hasOptionField = Object.prototype.hasOwnProperty.call(
+      req.body,
+      "customization_option_id"
+    );
+
+    let nextOptionId;
+
+    if (hasOptionField) {
+      const designProductResult = await pool.query(
+        `
+        SELECT dc.product_id
+        FROM collection_designs cd
+        JOIN design_collections dc ON dc.id = cd.collection_id
+        WHERE cd.id = $1
+        `,
+        [req.params.id]
+      );
+
+      if (designProductResult.rows.length === 0) {
+        return res.status(404).json({ error: "Design not found" });
+      }
+
+      const optionResolution = await resolveDesignOptionId(
+        designProductResult.rows[0].product_id,
+        req.body.customization_option_id
+      );
+
+      if (!optionResolution.ok) {
+        return res.status(400).json({ error: optionResolution.error });
+      }
+
+      nextOptionId = optionResolution.value;
+    }
+
+    const updateResult = await pool.query(
       `
       UPDATE collection_designs
       SET
         name = COALESCE($1, name),
         sort_order = COALESCE($2, sort_order),
-        is_active = COALESCE($3, is_active)
-      WHERE id = $4
-      RETURNING *
+        is_active = COALESCE($3, is_active),
+        customization_option_id = CASE
+          WHEN $5 THEN $4
+          ELSE customization_option_id
+        END
+      WHERE id = $6
+      RETURNING id
       `,
-      [name, sort_order, is_active, req.params.id]
+      [name, sort_order, is_active, nextOptionId, hasOptionField, req.params.id]
     );
 
-    if (result.rows.length === 0) {
+    if (updateResult.rows.length === 0) {
       return res.status(404).json({ error: "Design not found" });
     }
+
+    const result = await pool.query(
+      `${DESIGN_SELECT_WITH_OPTION} WHERE cd.id = $1`,
+      [updateResult.rows[0].id]
+    );
 
     res.json(result.rows[0]);
   } catch (err) {

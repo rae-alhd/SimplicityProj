@@ -48,6 +48,11 @@ export default function AdminCustomization() {
   const [designsLoading, setDesignsLoading] = useState(false);
   const [newDesignName, setNewDesignName] = useState("");
   const [newDesignFile, setNewDesignFile] = useState(null);
+  // Task I1: placement/customization option chosen for the design being
+  // created — "" means "No placement assigned". Reset on every product,
+  // collection, or design switch so Product B never inherits Product A's
+  // selected option (see the reset points below).
+  const [newDesignOptionId, setNewDesignOptionId] = useState("");
 
   // Which design's "Available Colors & Sizes" editor is currently open —
   // only one at a time, matching the existing one-collection-open pattern.
@@ -69,6 +74,7 @@ export default function AdminCustomization() {
       setSelectedCollectionId(null);
       setDesigns([]);
       setExpandedDesignId(null);
+      setNewDesignOptionId("");
       loadCustomizationData(selectedProductId);
     }
   }, [selectedProductId]);
@@ -335,6 +341,9 @@ export default function AdminCustomization() {
       const formData = new FormData();
       formData.append("name", newDesignName);
       formData.append("image", newDesignFile);
+      if (newDesignOptionId) {
+        formData.append("customization_option_id", newDesignOptionId);
+      }
 
       // Use plain fetch here (not authFetch) — authFetch always sets
       // Content-Type: application/json, which breaks multipart uploads.
@@ -357,6 +366,24 @@ export default function AdminCustomization() {
 
       setNewDesignName("");
       setNewDesignFile(null);
+      setNewDesignOptionId("");
+      loadDesigns(selectedCollectionId);
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  // Task I1: update an existing design's assigned placement/customization
+  // option — including clearing it back to "No placement assigned" (null).
+  async function updateDesignOption(designId, value) {
+    try {
+      await authFetch(`${API_BASE}/admin/customization/designs/${designId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          customization_option_id: value === "" ? null : Number(value),
+        }),
+      });
+
       loadDesigns(selectedCollectionId);
     } catch (err) {
       alert(err.message);
@@ -390,6 +417,7 @@ export default function AdminCustomization() {
 
       setNewDesignName("");
       setNewDesignFile(null);
+      setNewDesignOptionId("");
       setExpandedDesignId(null);
 
       return next;
@@ -407,6 +435,12 @@ export default function AdminCustomization() {
   const productCollections = collections.filter(
     (c) => Number(c.product_id) === Number(selectedProductId)
   );
+
+  // Task I1: `options` is already scoped to the selected product (loaded by
+  // loadCustomizationData) and every collection/design shown below always
+  // belongs to that same product, so this is always the correct product's
+  // option list — only active options are offered as a placement choice.
+  const activeOptionsForProduct = options.filter((o) => o.is_active);
 
   if (loading) {
     return <div style={styles.centerPage}>Loading customization manager...</div>;
@@ -773,6 +807,20 @@ export default function AdminCustomization() {
                                 setNewDesignFile(e.target.files[0] || null)
                               }
                             />
+                            <select
+                              value={newDesignOptionId}
+                              onChange={(e) =>
+                                setNewDesignOptionId(e.target.value)
+                              }
+                              style={styles.input}
+                            >
+                              <option value="">No placement assigned</option>
+                              {activeOptionsForProduct.map((o) => (
+                                <option key={o.id} value={o.id}>
+                                  {o.option_label}
+                                </option>
+                              ))}
+                            </select>
                             <button
                               onClick={uploadDesign}
                               style={styles.addBtn}
@@ -791,7 +839,26 @@ export default function AdminCustomization() {
                             </p>
                           ) : (
                             <div style={styles.exampleGrid}>
-                              {designs.map((design) => (
+                              {designs.map((design) => {
+                                // A design's assigned option can go stale if
+                                // the owner deactivates that option later —
+                                // the id is still stored on the design, but
+                                // it's no longer in activeOptionsForProduct.
+                                // Without this check the controlled <select>
+                                // would silently render blank and the
+                                // "no placement" warning wouldn't fire
+                                // (customization_option_id isn't null).
+                                const assignedOptionIsActive =
+                                  activeOptionsForProduct.some(
+                                    (option) =>
+                                      Number(option.id) ===
+                                      Number(design.customization_option_id)
+                                  );
+                                const hasStaleAssignedOption =
+                                  Boolean(design.customization_option_id) &&
+                                  !assignedOptionIsActive;
+
+                                return (
                                 <Fragment key={design.id}>
                                   <div style={styles.exampleCard}>
                                     <img
@@ -811,6 +878,56 @@ export default function AdminCustomization() {
                                         ? "Active"
                                         : "Inactive"}
                                     </p>
+
+                                    <label style={styles.designOptionLabel}>
+                                      Placement
+                                    </label>
+                                    <select
+                                      value={design.customization_option_id ?? ""}
+                                      onChange={(e) =>
+                                        updateDesignOption(
+                                          design.id,
+                                          e.target.value
+                                        )
+                                      }
+                                      style={styles.input}
+                                    >
+                                      <option value="">
+                                        No placement assigned
+                                      </option>
+                                      {hasStaleAssignedOption && (
+                                        <option
+                                          value={design.customization_option_id}
+                                          disabled
+                                        >
+                                          {`Current placement unavailable: ${
+                                            design.customization_option_name ||
+                                            "Unknown placement"
+                                          }`}
+                                        </option>
+                                      )}
+                                      {activeOptionsForProduct.map((o) => (
+                                        <option key={o.id} value={o.id}>
+                                          {o.option_label}
+                                        </option>
+                                      ))}
+                                    </select>
+
+                                    {!design.customization_option_id && (
+                                      <p style={styles.designOptionWarning}>
+                                        Assign a placement before making this
+                                        design customer-ready.
+                                      </p>
+                                    )}
+
+                                    {hasStaleAssignedOption && (
+                                      <p style={styles.designOptionWarning}>
+                                        The assigned placement is inactive or
+                                        unavailable. Choose an active
+                                        placement.
+                                      </p>
+                                    )}
+
                                     <button
                                       onClick={() =>
                                         deactivateDesign(design.id)
@@ -847,7 +964,8 @@ export default function AdminCustomization() {
                                     </div>
                                   )}
                                 </Fragment>
-                              ))}
+                                );
+                              })}
                             </div>
                           )}
                         </div>
@@ -1828,6 +1946,22 @@ const styles = {
     padding: "18px",
     marginTop: "8px",
     marginBottom: "8px",
+  },
+  designOptionLabel: {
+    display: "block",
+    fontSize: "10px",
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    color: "#a99b84",
+    margin: "8px 0 4px",
+  },
+  designOptionWarning: {
+    background: "#fff8e6",
+    border: "1px solid #e8d9a8",
+    color: "#8a6d1f",
+    fontSize: "12px",
+    padding: "8px",
+    margin: "8px 0 0",
   },
   optionForm: {
     display: "grid",
