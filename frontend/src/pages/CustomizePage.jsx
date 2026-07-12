@@ -265,6 +265,7 @@ function CustomizePage() {
           is_customized: true,
           customization_option_id: selectedOption.id,
           design_id: selectedDesign?.id || null,
+          design_variant_id: selectedDesignVariant?.id || null,
         }),
       });
 

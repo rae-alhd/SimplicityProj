@@ -382,6 +382,7 @@ function CartItem({ item, onChangeQty, onRemove }) {
             )}
             <div>
               <strong>Design:</strong> {item.design_label}
+              {item.design_color_name ? ` — ${item.design_color_name}` : ""}
             </div>
           </div>
 

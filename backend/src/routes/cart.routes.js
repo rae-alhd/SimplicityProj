@@ -19,7 +19,7 @@ router.get("/", authMiddleware, async (req, res) => {
 
     const result = await pool.query(
       `
-      SELECT 
+      SELECT
         cart_items.id,
         cart_items.user_id,
         cart_items.product_id,
@@ -39,6 +39,11 @@ router.get("/", authMiddleware, async (req, res) => {
         collection_designs.name AS design_label,
         collection_designs.image_url AS design_image_url,
         design_collections.name AS collection_name,
+
+        cart_items.design_variant_id,
+        variant_design.name AS design_name,
+        variant_color.id AS design_color_id,
+        variant_color.color_name AS design_color_name,
 
                 products.name AS product_name,
 (
@@ -61,6 +66,12 @@ products.stock_quantity
         ON cart_items.design_id = collection_designs.id
       LEFT JOIN design_collections
         ON collection_designs.collection_id = design_collections.id
+      LEFT JOIN collection_design_variants
+        ON cart_items.design_variant_id = collection_design_variants.id
+      LEFT JOIN collection_designs AS variant_design
+        ON collection_design_variants.design_id = variant_design.id
+      LEFT JOIN customizable_product_colors AS variant_color
+        ON collection_design_variants.color_id = variant_color.id
       WHERE cart_items.user_id = $1
       ORDER BY cart_items.id ASC
       `,
@@ -102,6 +113,30 @@ products.stock_quantity
       ])
     );
 
+    // Design-variant preview images (Task H1 image priority, tier 1/2):
+    // batched in one query, never exposing inactive rows, exactly like the
+    // product-images batching above — no per-row query.
+    const variantIds = [
+      ...new Set(cartRows.map((row) => row.design_variant_id).filter(Boolean)),
+    ];
+
+    const variantPreviewsResult = await pool.query(
+      `
+      SELECT id, variant_id, image_url, sort_order, is_main
+      FROM collection_design_preview_images
+      WHERE is_active = true AND variant_id = ANY($1::int[])
+      ORDER BY variant_id ASC, is_main DESC, sort_order ASC, id ASC
+      `,
+      [variantIds]
+    );
+    const previewsByVariant = {};
+    for (const previewRow of variantPreviewsResult.rows) {
+      if (!previewsByVariant[previewRow.variant_id]) {
+        previewsByVariant[previewRow.variant_id] = [];
+      }
+      previewsByVariant[previewRow.variant_id].push(previewRow);
+    }
+
     const cartRowsWithImages = cartRows.map((row) => {
       const productImages = imagesByProduct.get(row.product_id) || [];
 
@@ -119,9 +154,32 @@ products.stock_quantity
       const relevantImages =
         colorImages.length > 0 ? colorImages : productImages;
 
+      // Legacy/deactivated rows (design_id but no design_variant_id, or a
+      // variant with no active previews left) simply have an empty list
+      // here and fall through to the existing product-image resolution —
+      // never crash, never invent a variant.
+      const variantPreviews = row.design_variant_id
+        ? previewsByVariant[row.design_variant_id] || []
+        : [];
+
+      // Already ordered is_main DESC, sort_order ASC, id ASC by the query
+      // above, so [0] is the variant's main preview image (or its earliest
+      // active image if none is flagged main).
+      const designMainPreviewImageUrl =
+        variantPreviews.length > 0 ? variantPreviews[0].image_url : null;
+
+      // CART IMAGE PRIORITY:
+      // 1-2. design variant's active main/first preview image
+      // 3-5. existing product-color gallery resolution (color image ->
+      //      general product image -> null), untouched.
+      const mainImageUrl =
+        designMainPreviewImageUrl ||
+        resolveMainImageUrl(relevantImages, row.image_url);
+
       return {
         ...row,
-        main_image_url: resolveMainImageUrl(relevantImages, row.image_url),
+        design_main_preview_image_url: designMainPreviewImageUrl,
+        main_image_url: mainImageUrl,
       };
     });
 
@@ -145,6 +203,7 @@ router.post("/", authMiddleware, async (req, res) => {
       custom_text = null,
       custom_note = null,
       design_id: rawDesignId = null,
+      design_variant_id: rawDesignVariantId = null,
     } = req.body;
 
     const user_id = req.user.id;
@@ -204,47 +263,191 @@ router.post("/", authMiddleware, async (req, res) => {
       design_id = parsedDesignId;
     }
 
-    // 🔍 Validate the selected design, if any
+    // 🔍 Normalize design_variant_id the same way
+    let design_variant_id = null;
+    if (
+      rawDesignVariantId !== null &&
+      rawDesignVariantId !== undefined &&
+      rawDesignVariantId !== ""
+    ) {
+      const parsedVariantId = Number(rawDesignVariantId);
+
+      if (!Number.isFinite(parsedVariantId)) {
+        return res.status(400).json({ error: "Invalid design_variant_id" });
+      }
+
+      design_variant_id = parsedVariantId;
+    }
+
+    // A design-linked cart item must always carry both ids together — the
+    // frontend only ever sends design_variant_id once selectedDesignVariant
+    // has been resolved for the chosen design, so a request with only one
+    // of the two is treated as incomplete/untrusted rather than guessed at.
+    if ((design_id && !design_variant_id) || (design_variant_id && !design_id)) {
+      return res.status(400).json({
+        error:
+          "Selected design configuration is incomplete. Please choose the design again.",
+      });
+    }
+
+    // Canonical color/size for this cart row. For a design-linked item
+    // these are overwritten below from the validated variant instead of
+    // the raw submitted strings; for an ordinary (non-design) item they
+    // stay exactly as submitted — unchanged from existing behavior.
+    let resolvedColor = color;
+    let resolvedSize = size;
+
+    // 🔍 Validate the selected design and its exact color/size variant, if
+    // any. Every step re-derives trust from the database — the submitted
+    // design_id, product_id, color text, and variant id are never assumed
+    // to already agree with each other.
     if (design_id) {
-      const designCheck = await pool.query(
+      const variantResult = await pool.query(
         `
         SELECT
-          collection_designs.id,
-          collection_designs.is_active AS design_is_active,
-          design_collections.is_active AS collection_is_active,
-          design_collections.product_id
-        FROM collection_designs
-        JOIN design_collections
-          ON design_collections.id = collection_designs.collection_id
-        WHERE collection_designs.id = $1
+          cdv.id AS variant_id,
+          cdv.design_id AS variant_design_id,
+          cdv.color_id AS variant_color_id,
+          cdv.is_active AS variant_is_active,
+          cd.is_active AS design_is_active,
+          dc.is_active AS collection_is_active,
+          dc.product_id AS collection_product_id,
+          col.color_name AS variant_color_name,
+          col.is_active AS variant_color_is_active,
+          col.product_id AS variant_color_product_id
+        FROM collection_design_variants cdv
+        JOIN collection_designs cd ON cd.id = cdv.design_id
+        JOIN design_collections dc ON dc.id = cd.collection_id
+        JOIN customizable_product_colors col ON col.id = cdv.color_id
+        WHERE cdv.id = $1
         `,
-        [design_id]
+        [design_variant_id]
       );
 
-      if (designCheck.rows.length === 0) {
-        return res.status(400).json({ error: "Invalid design_id" });
-      }
-
-      const design = designCheck.rows[0];
-
-      if (!design.design_is_active) {
-        return res.status(400).json({ error: "Selected design is not active" });
-      }
-
-      if (!design.collection_is_active) {
+      if (variantResult.rows.length === 0) {
         return res
           .status(400)
-          .json({ error: "Selected design's collection is not active" });
+          .json({ error: "Selected design is not available for this product." });
       }
 
-      if (Number(design.product_id) !== Number(product_id)) {
+      const variant = variantResult.rows[0];
+
+      // variant.design_id belonging to its collection, and that collection
+      // owning it, is already guaranteed by the JOIN chain above — no
+      // separate check needed for "design belongs to the collection".
+
+      if (Number(variant.variant_design_id) !== Number(design_id)) {
         return res
           .status(400)
-          .json({ error: "Selected design does not belong to this product" });
+          .json({ error: "Selected design is not available for this product." });
+      }
+
+      if (
+        !variant.collection_is_active ||
+        !variant.design_is_active ||
+        Number(variant.collection_product_id) !== Number(product_id)
+      ) {
+        return res
+          .status(400)
+          .json({ error: "Selected design is not available for this product." });
+      }
+
+      if (
+        !variant.variant_is_active ||
+        !variant.variant_color_is_active ||
+        Number(variant.variant_color_product_id) !== Number(product_id)
+      ) {
+        return res
+          .status(400)
+          .json({ error: "Selected design is not available in this color." });
+      }
+
+      const previewResult = await pool.query(
+        `
+        SELECT id
+        FROM collection_design_preview_images
+        WHERE variant_id = $1 AND is_active = true
+        LIMIT 1
+        `,
+        [design_variant_id]
+      );
+
+      if (previewResult.rows.length === 0) {
+        return res
+          .status(400)
+          .json({ error: "Selected design preview is no longer available." });
+      }
+
+      // Canonical color: always the variant's own color, never the
+      // submitted string. This makes a manipulated/mismatched client color
+      // value irrelevant rather than requiring a separate reject-on-
+      // mismatch check, and sidesteps fragile case-sensitive comparisons
+      // entirely.
+      resolvedColor = variant.variant_color_name;
+
+      // Size validation, scoped to this product and this exact variant.
+      const productSizesResult = await pool.query(
+        `
+        SELECT id, size_label
+        FROM customizable_product_sizes
+        WHERE product_id = $1 AND is_active = true
+        `,
+        [product_id]
+      );
+      const hasSizes = productSizesResult.rows.length > 0;
+
+      if (hasSizes) {
+        const submittedSizeLabel =
+          typeof size === "string" ? size.trim().toLowerCase() : "";
+
+        if (!submittedSizeLabel) {
+          return res.status(400).json({ error: "Please select a size." });
+        }
+
+        const matchedSize = productSizesResult.rows.find(
+          (s) => s.size_label.trim().toLowerCase() === submittedSizeLabel
+        );
+
+        if (!matchedSize) {
+          return res
+            .status(400)
+            .json({ error: "Selected size is not available for this product." });
+        }
+
+        const restrictionsResult = await pool.query(
+          "SELECT size_id FROM collection_design_variant_sizes WHERE variant_id = $1",
+          [design_variant_id]
+        );
+
+        if (restrictionsResult.rows.length > 0) {
+          const allowedSizeIds = restrictionsResult.rows.map((r) => r.size_id);
+
+          if (!allowedSizeIds.includes(matchedSize.id)) {
+            return res
+              .status(400)
+              .json({ error: "Selected design is not available in this size." });
+          }
+        }
+
+        // Canonical size label resolved from the DB, not the raw
+        // (possibly differently-cased) submitted string.
+        resolvedSize = matchedSize.size_label;
+      } else {
+        // No sizes configured for this product — normalize to the
+        // project's existing no-size representation (null) regardless of
+        // what was submitted. A variant for a sizeless product should
+        // never actually have restriction rows (the admin size-restriction
+        // endpoint only allows restricting to sizes that exist for the
+        // product), so there is nothing meaningful to validate here.
+        resolvedSize = null;
       }
     }
 
-    // 🔍 Check if same exact item already exists
+    // 🔍 Check if same exact item already exists. design_variant_id is
+    // included null-safely (COALESCE) just like design_id/customization_
+    // option_id — same product/color/size but a different design variant,
+    // or the same design on a different color/size, must never merge into
+    // an existing legacy row that has no variant at all.
     const existing = await pool.query(
       `
       SELECT *
@@ -258,17 +461,19 @@ router.post("/", authMiddleware, async (req, res) => {
         AND COALESCE(custom_text, '') = COALESCE($7, '')
         AND COALESCE(custom_note, '') = COALESCE($8, '')
         AND COALESCE(design_id, 0) = COALESCE($9, 0)
+        AND COALESCE(design_variant_id, 0) = COALESCE($10, 0)
       `,
       [
         user_id,
         product_id,
-        color,
-        size,
+        resolvedColor,
+        resolvedSize,
         is_customized,
         customization_option_id,
         custom_text,
         custom_note,
         design_id,
+        design_variant_id,
       ]
     );
 
@@ -300,22 +505,24 @@ router.post("/", authMiddleware, async (req, res) => {
         customization_option_id,
         custom_text,
         custom_note,
-        design_id
+        design_id,
+        design_variant_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       RETURNING *
       `,
       [
         user_id,
         product_id,
-        color,
-        size,
+        resolvedColor,
+        resolvedSize,
         qty,
         is_customized,
         customization_option_id,
         custom_text,
         custom_note,
         design_id,
+        design_variant_id,
       ]
     );
 
