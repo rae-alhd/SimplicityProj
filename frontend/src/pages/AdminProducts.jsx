@@ -209,6 +209,14 @@ export default function AdminProducts() {
   const [editColorName, setEditColorName] = useState("");
   const [editColorHex, setEditColorHex] = useState("");
 
+  // Product Sizes management — same pattern as Product Colors above, feeds
+  // the Task K2 inventory matrix's active-size columns.
+  const [manageSizes, setManageSizes] = useState([]);
+  const [newSizeLabel, setNewSizeLabel] = useState("");
+  const [editingSizeId, setEditingSizeId] = useState(null);
+  const [editSizeLabel, setEditSizeLabel] = useState("");
+  const [sizeActionError, setSizeActionError] = useState("");
+
   // Task K2: Variant Inventory — kept as its own isolated state group so it
   // can be reset in one place (the editingProduct?.id effect below) without
   // touching the unrelated colors/images state above.
@@ -579,6 +587,117 @@ export default function AdminProducts() {
     }
   };
 
+  const fetchManageSizes = async (productId) => {
+    try {
+      const res = await fetch(
+        `${API_BASE}/admin/customization/${productId}/sizes`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const data = await res.json();
+      setManageSizes(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("Error fetching manage sizes:", err);
+    }
+  };
+
+  // Adding, editing, (de)activating a size changes which columns the Task
+  // K2 inventory matrix expects — every mutation below reloads both the
+  // size list AND the inventory configuration (which rebuilds the draft
+  // from the refreshed response), so a newly activated size shows up as an
+  // immediate blank column instead of requiring a manual refresh.
+  const handleAddSize = async () => {
+    if (!editingProduct || !newSizeLabel.trim()) return;
+
+    try {
+      setSizeActionError("");
+
+      const res = await fetch(
+        `${API_BASE}/admin/customization/${editingProduct.id}/sizes`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ size_label: newSizeLabel.trim() }),
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setSizeActionError(data.error || "Could not add size.");
+        return;
+      }
+
+      setNewSizeLabel("");
+      await fetchManageSizes(editingProduct.id);
+      await fetchInventory(editingProduct.id);
+    } catch (err) {
+      console.error("Add size error:", err);
+      setSizeActionError("Something went wrong while adding the size.");
+    }
+  };
+
+  const handleUpdateSize = async (size) => {
+    if (!editSizeLabel.trim()) return;
+
+    try {
+      setSizeActionError("");
+
+      const res = await fetch(`${API_BASE}/admin/customization/sizes/${size.id}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ size_label: editSizeLabel.trim() }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setSizeActionError(data.error || "Could not update size.");
+        return;
+      }
+
+      setEditingSizeId(null);
+      await fetchManageSizes(editingProduct.id);
+      await fetchInventory(editingProduct.id);
+    } catch (err) {
+      console.error("Update size error:", err);
+      setSizeActionError("Something went wrong while updating the size.");
+    }
+  };
+
+  const handleToggleSizeActive = async (size) => {
+    try {
+      setSizeActionError("");
+
+      const res = await fetch(`${API_BASE}/admin/customization/sizes/${size.id}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ is_active: !size.is_active }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setSizeActionError(data.error || "Could not update size status.");
+        return;
+      }
+
+      await fetchManageSizes(editingProduct.id);
+      await fetchInventory(editingProduct.id);
+    } catch (err) {
+      console.error("Toggle size active error:", err);
+      setSizeActionError("Something went wrong while updating the size status.");
+    }
+  };
+
   // Task K2: Variant Inventory — GET reloads the whole panel from the
   // server (source of truth) and rebuilds the draft from it, so a save or
   // mode switch always ends up showing exactly what's actually stored.
@@ -860,17 +979,26 @@ export default function AdminProducts() {
       fetchProductImages(editingProduct.id);
       fetchProductColors(editingProduct.id);
       fetchManageColors(editingProduct.id);
+      fetchManageSizes(editingProduct.id);
       fetchInventory(editingProduct.id);
     } else {
       setProductImages([]);
       setProductColors([]);
       setManageColors([]);
+      setManageSizes([]);
     }
     setUploadFile(null);
     setUploadColorId("");
     setNewColorName("");
     setNewColorHex("");
     setEditingColorId(null);
+
+    // Never let Product A's size list/drafts/errors survive into Product
+    // B's panel, or into no product being open at all.
+    setNewSizeLabel("");
+    setEditingSizeId(null);
+    setEditSizeLabel("");
+    setSizeActionError("");
 
     // Task K2: never let Product A's inventory data/draft/messages survive
     // into Product B's panel, or into no product being open at all.
@@ -1395,6 +1523,97 @@ export default function AdminProducts() {
                               Delete
                             </button>
                           </>
+                        )}
+                      </div>
+                    )
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div style={styles.colorsSection}>
+              <p style={styles.smallEyebrow}>Product Sizes</p>
+
+              <div style={styles.colorAddRow}>
+                <input
+                  style={styles.input}
+                  placeholder="Size label (e.g. S, M, XL)"
+                  value={newSizeLabel}
+                  onChange={(e) => setNewSizeLabel(e.target.value)}
+                />
+                <button onClick={handleAddSize} style={styles.editBtn}>
+                  Add Size
+                </button>
+              </div>
+
+              {sizeActionError && (
+                <p style={{ ...styles.muted, color: "#b52a2a" }}>
+                  {sizeActionError}
+                </p>
+              )}
+
+              {manageSizes.length === 0 ? (
+                <p style={styles.muted}>
+                  No sizes yet. This product uses General inventory only.
+                </p>
+              ) : (
+                <div style={styles.colorList}>
+                  {manageSizes.map((size) =>
+                    editingSizeId === size.id ? (
+                      <div key={size.id} style={styles.colorItem}>
+                        <input
+                          style={styles.input}
+                          value={editSizeLabel}
+                          onChange={(e) => setEditSizeLabel(e.target.value)}
+                        />
+                        <button
+                          onClick={() => handleUpdateSize(size)}
+                          style={styles.editBtn}
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={() => setEditingSizeId(null)}
+                          style={styles.textBtn}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <div key={size.id} style={styles.colorItem}>
+                        <strong>{size.size_label}</strong>
+                        <span
+                          style={
+                            size.is_active
+                              ? styles.mainBadge
+                              : styles.imageColorTag
+                          }
+                        >
+                          {size.is_active ? "Active" : "Inactive"}
+                        </span>
+                        <button
+                          onClick={() => {
+                            setEditingSizeId(size.id);
+                            setEditSizeLabel(size.size_label);
+                          }}
+                          style={styles.editBtn}
+                        >
+                          Edit
+                        </button>
+                        {size.is_active ? (
+                          <button
+                            onClick={() => handleToggleSizeActive(size)}
+                            style={styles.imageDeleteBtn}
+                          >
+                            Deactivate
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleToggleSizeActive(size)}
+                            style={styles.imageActionBtn}
+                          >
+                            Reactivate
+                          </button>
                         )}
                       </div>
                     )
