@@ -278,4 +278,388 @@ router.patch("/:productId/images/:imageId/deactivate", async (req, res) => {
   }
 });
 
+// -------------------- VARIANT INVENTORY (Task K1) --------------------
+// Foundation only: GENERAL (products.stock_quantity, existing behavior)
+// vs VARIANT (per color+size stock in product_inventory_variants).
+// No customer-facing or Cart/checkout code reads any of this yet.
+
+// Active colors/sizes for a product, in the same shape/order already used
+// by the public customization route (id, name/label, sort_order).
+async function getActiveColorsAndSizes(productId) {
+  const [colorsResult, sizesResult] = await Promise.all([
+    pool.query(
+      `
+      SELECT id, color_name, color_hex, sort_order
+      FROM customizable_product_colors
+      WHERE product_id = $1 AND is_active = true
+      ORDER BY sort_order ASC, id ASC
+      `,
+      [productId]
+    ),
+    pool.query(
+      `
+      SELECT id, size_label, sort_order
+      FROM customizable_product_sizes
+      WHERE product_id = $1 AND is_active = true
+      ORDER BY sort_order ASC, id ASC
+      `,
+      [productId]
+    ),
+  ]);
+
+  return { colors: colorsResult.rows, sizes: sizesResult.rows };
+}
+
+// Every combination a VARIANT product is currently expected to have a
+// stock row for: colors × sizes when the product has active colors,
+// otherwise sizes alone (color_id null on every combination).
+function computeExpectedCombinations(colors, sizes) {
+  if (colors.length === 0) {
+    return sizes.map((size) => ({
+      color_id: null,
+      size_id: size.id,
+      color_name: null,
+      size_label: size.size_label,
+    }));
+  }
+
+  const combinations = [];
+  for (const color of colors) {
+    for (const size of sizes) {
+      combinations.push({
+        color_id: color.id,
+        size_id: size.id,
+        color_name: color.color_name,
+        size_label: size.size_label,
+      });
+    }
+  }
+  return combinations;
+}
+
+function combinationKey(colorId, sizeId) {
+  return `${colorId === null || colorId === undefined ? "null" : colorId}:${sizeId}`;
+}
+
+// GET /api/admin/products/:productId/inventory
+router.get("/:productId/inventory", ensureProductExists, async (req, res) => {
+  try {
+    const { productId } = req.params;
+
+    const productResult = await pool.query(
+      "SELECT id, stock_quantity, inventory_mode FROM products WHERE id = $1",
+      [productId]
+    );
+    const product = productResult.rows[0];
+
+    const { colors, sizes } = await getActiveColorsAndSizes(productId);
+
+    // All stored variant rows, including ones whose color/size has since
+    // gone inactive — they stay visible/stored, just excluded from the
+    // completeness count below.
+    const variantsResult = await pool.query(
+      `
+      SELECT id, color_id, size_id, stock_quantity, created_at, updated_at
+      FROM product_inventory_variants
+      WHERE product_id = $1
+      ORDER BY color_id ASC NULLS FIRST, size_id ASC
+      `,
+      [productId]
+    );
+
+    const expectedCombinations = computeExpectedCombinations(colors, sizes);
+    const configuredKeys = new Set(
+      variantsResult.rows.map((v) => combinationKey(v.color_id, v.size_id))
+    );
+
+    const missingCombinations = expectedCombinations.filter(
+      (combo) => !configuredKeys.has(combinationKey(combo.color_id, combo.size_id))
+    );
+
+    const configuredCombinations = expectedCombinations.length - missingCombinations.length;
+    const isComplete =
+      expectedCombinations.length > 0 && missingCombinations.length === 0;
+
+    res.json({
+      product_id: Number(productId),
+      inventory_mode: product.inventory_mode,
+      general_stock_quantity: product.stock_quantity,
+      colors,
+      sizes,
+      variants: variantsResult.rows,
+      expected_combinations: expectedCombinations.length,
+      configured_combinations: configuredCombinations,
+      is_complete: isComplete,
+      missing_combinations: missingCombinations,
+    });
+  } catch (err) {
+    console.error("Get product inventory error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// PUT /api/admin/products/:productId/inventory/variants
+// Batch upsert. Every row is fully validated before anything is written —
+// one bad row rejects the whole batch, nothing partial is ever saved.
+router.put(
+  "/:productId/inventory/variants",
+  ensureProductExists,
+  async (req, res) => {
+    const { productId } = req.params;
+    const { variants } = req.body;
+
+    if (!Array.isArray(variants)) {
+      return res.status(400).json({ error: "variants must be an array." });
+    }
+
+    try {
+      const { colors, sizes } = await getActiveColorsAndSizes(productId);
+      const hasActiveColors = colors.length > 0;
+      const activeColorIds = new Set(colors.map((c) => c.id));
+      const activeSizeIds = new Set(sizes.map((s) => s.id));
+
+      // Rows referencing an id that exists but belongs to another product,
+      // or exists but is inactive, get the same two-tier distinction the
+      // product-image color validation above already uses.
+      const allColorsResult = await pool.query(
+        "SELECT id, product_id, is_active FROM customizable_product_colors WHERE id = ANY($1::int[])",
+        [variants.map((v) => v.color_id).filter((id) => id !== null && id !== undefined)]
+      );
+      const colorById = new Map(allColorsResult.rows.map((c) => [c.id, c]));
+
+      const allSizesResult = await pool.query(
+        "SELECT id, product_id, is_active FROM customizable_product_sizes WHERE id = ANY($1::int[])",
+        [variants.map((v) => v.size_id).filter((id) => id !== null && id !== undefined)]
+      );
+      const sizeById = new Map(allSizesResult.rows.map((s) => [s.id, s]));
+
+      const seenKeys = new Set();
+      const normalizedRows = [];
+
+      for (const row of variants) {
+        const rawColorId = row.color_id;
+        const rawSizeId = row.size_id;
+        const rawStock = row.stock_quantity;
+
+        const colorProvided = rawColorId !== null && rawColorId !== undefined;
+
+        if (hasActiveColors && !colorProvided) {
+          return res
+            .status(400)
+            .json({ error: "color_id is required for this product." });
+        }
+
+        if (!hasActiveColors && colorProvided) {
+          return res.status(400).json({
+            error: "This product has no active colors; color_id must be omitted or null.",
+          });
+        }
+
+        let colorId = null;
+        if (colorProvided) {
+          colorId = Number(rawColorId);
+          const color = colorById.get(colorId);
+
+          if (!Number.isInteger(colorId) || !color) {
+            return res.status(400).json({ error: "Invalid color_id." });
+          }
+          if (Number(color.product_id) !== Number(productId)) {
+            return res
+              .status(400)
+              .json({ error: "Selected color does not belong to this product." });
+          }
+          if (!color.is_active || !activeColorIds.has(colorId)) {
+            return res.status(400).json({ error: "Selected color is not active." });
+          }
+        }
+
+        const sizeId = Number(rawSizeId);
+        const size = sizeById.get(sizeId);
+
+        if (rawSizeId === null || rawSizeId === undefined || !Number.isInteger(sizeId) || !size) {
+          return res.status(400).json({ error: "Invalid size_id." });
+        }
+        if (Number(size.product_id) !== Number(productId)) {
+          return res
+            .status(400)
+            .json({ error: "Selected size does not belong to this product." });
+        }
+        if (!size.is_active || !activeSizeIds.has(sizeId)) {
+          return res.status(400).json({ error: "Selected size is not active." });
+        }
+
+        if (
+          typeof rawStock !== "number" ||
+          !Number.isInteger(rawStock) ||
+          rawStock < 0
+        ) {
+          return res
+            .status(400)
+            .json({ error: "Stock quantity must be a nonnegative integer." });
+        }
+
+        const key = combinationKey(colorId, sizeId);
+        if (seenKeys.has(key)) {
+          return res.status(400).json({
+            error: "Duplicate color/size combination in request.",
+          });
+        }
+        seenKeys.add(key);
+
+        normalizedRows.push({ colorId, sizeId, stockQuantity: rawStock });
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+
+        // Same product-row lock the mode-switch PATCH takes below, so the
+        // two endpoints actually serialize per product: a mode switch can
+        // no longer inspect the matrix while this save is still mid-write,
+        // and two saves for the same product can't interleave either.
+        // Different products still update independently (the lock is on
+        // that product's own row only).
+        await client.query("SELECT id FROM products WHERE id = $1 FOR UPDATE", [
+          productId,
+        ]);
+
+        for (const { colorId, sizeId, stockQuantity } of normalizedRows) {
+          if (colorId !== null) {
+            await client.query(
+              `
+              INSERT INTO product_inventory_variants (product_id, color_id, size_id, stock_quantity, updated_at)
+              VALUES ($1, $2, $3, $4, now())
+              ON CONFLICT (product_id, color_id, size_id) WHERE color_id IS NOT NULL
+              DO UPDATE SET stock_quantity = EXCLUDED.stock_quantity, updated_at = now()
+              `,
+              [productId, colorId, sizeId, stockQuantity]
+            );
+          } else {
+            await client.query(
+              `
+              INSERT INTO product_inventory_variants (product_id, color_id, size_id, stock_quantity, updated_at)
+              VALUES ($1, NULL, $2, $3, now())
+              ON CONFLICT (product_id, size_id) WHERE color_id IS NULL
+              DO UPDATE SET stock_quantity = EXCLUDED.stock_quantity, updated_at = now()
+              `,
+              [productId, sizeId, stockQuantity]
+            );
+          }
+        }
+
+        await client.query("COMMIT");
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
+
+      const finalResult = await pool.query(
+        `
+        SELECT id, color_id, size_id, stock_quantity, created_at, updated_at
+        FROM product_inventory_variants
+        WHERE product_id = $1
+        ORDER BY color_id ASC NULLS FIRST, size_id ASC
+        `,
+        [productId]
+      );
+
+      res.json({ variants: finalResult.rows });
+    } catch (err) {
+      console.error("Batch upsert inventory variants error:", err);
+      res.status(500).json({ error: "Server error" });
+    }
+  }
+);
+
+// PATCH /api/admin/products/:productId/inventory/mode
+router.patch(
+  "/:productId/inventory/mode",
+  ensureProductExists,
+  async (req, res) => {
+    const { productId } = req.params;
+    const { inventory_mode } = req.body;
+
+    if (inventory_mode !== "GENERAL" && inventory_mode !== "VARIANT") {
+      return res
+        .status(400)
+        .json({ error: "inventory_mode must be GENERAL or VARIANT." });
+    }
+
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      // Same product-row lock the variant-upsert PUT above takes. Both
+      // endpoints lock this exact row first, so they serialize per product:
+      // this completeness check can never run while a variant save for the
+      // same product is still mid-write, and two mode switches for the same
+      // product can't race each other either.
+      await client.query("SELECT id FROM products WHERE id = $1 FOR UPDATE", [
+        productId,
+      ]);
+
+      if (inventory_mode === "GENERAL") {
+        const result = await client.query(
+          "UPDATE products SET inventory_mode = 'GENERAL' WHERE id = $1 RETURNING id, inventory_mode, stock_quantity",
+          [productId]
+        );
+        await client.query("COMMIT");
+        return res.json(result.rows[0]);
+      }
+
+      // Switching to VARIANT: every active color×size combination (or
+      // size-only, if the product has no active colors) must already have
+      // a stored, valid stock row.
+      const { colors, sizes } = await getActiveColorsAndSizes(productId);
+
+      if (sizes.length === 0) {
+        await client.query("ROLLBACK");
+        return res
+          .status(400)
+          .json({ error: "Variant inventory requires configured sizes." });
+      }
+
+      const expectedCombinations = computeExpectedCombinations(colors, sizes);
+
+      const variantsResult = await client.query(
+        "SELECT color_id, size_id FROM product_inventory_variants WHERE product_id = $1",
+        [productId]
+      );
+      const configuredKeys = new Set(
+        variantsResult.rows.map((v) => combinationKey(v.color_id, v.size_id))
+      );
+
+      const missingCombinations = expectedCombinations.filter(
+        (combo) => !configuredKeys.has(combinationKey(combo.color_id, combo.size_id))
+      );
+
+      if (missingCombinations.length > 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error:
+            "Configure stock for every active color and size before enabling variant inventory.",
+          missing_combinations: missingCombinations,
+        });
+      }
+
+      const result = await client.query(
+        "UPDATE products SET inventory_mode = 'VARIANT' WHERE id = $1 RETURNING id, inventory_mode, stock_quantity",
+        [productId]
+      );
+
+      await client.query("COMMIT");
+      res.json(result.rows[0]);
+    } catch (err) {
+      await client.query("ROLLBACK");
+      console.error("Change inventory mode error:", err);
+      res.status(500).json({ error: "Server error" });
+    } finally {
+      client.release();
+    }
+  }
+);
+
 module.exports = router;
