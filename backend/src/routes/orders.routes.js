@@ -2,6 +2,10 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
 const { authMiddleware } = require("../middleware/auth.middleware");
+const {
+  groupImagesByProduct,
+  resolveMainImageUrl,
+} = require("../utils/productImages");
 
 /* ─────────────────────────────────────────────
    HELPER: admin-only guard
@@ -15,6 +19,278 @@ function adminOnly(req, res, next) {
     return res.status(403).json({ error: "Admin access required." });
   }
   next();
+}
+
+/* ─────────────────────────────────────────────
+   Task H2: checkout-time design/color/size revalidation.
+   Configuration can change between Add to Cart (Task H1) and checkout,
+   so H1's earlier validation is never trusted alone here — every
+   design-linked Cart row is re-verified fresh, inside the checkout
+   transaction, immediately before the order is created.
+   Returns { ok: true, snapshot } or { ok: false, error }.
+───────────────────────────────────────────── */
+async function validateAndSnapshotDesignVariant(client, cartItem) {
+  // Legacy rows: design_id present but no design_variant_id at all (added
+  // to Cart before Task H1 existed). The exact color/size compatibility
+  // originally selected can't be reconstructed unambiguously, so these are
+  // blocked with a clear message rather than guessed at — the Cart row
+  // itself is left untouched so the customer can reselect the design.
+  if (!cartItem.design_variant_id) {
+    return {
+      ok: false,
+      error:
+        "One of your customized items needs to be selected again because its design configuration has changed.",
+    };
+  }
+
+  const variantResult = await client.query(
+    `
+    SELECT
+      cdv.id AS variant_id,
+      cdv.design_id AS variant_design_id,
+      cdv.color_id AS variant_color_id,
+      cdv.is_active AS variant_is_active,
+      cd.name AS design_name,
+      cd.is_active AS design_is_active,
+      dc.is_active AS collection_is_active,
+      dc.product_id AS collection_product_id,
+      col.color_name AS variant_color_name,
+      col.is_active AS variant_color_is_active,
+      col.product_id AS variant_color_product_id
+    FROM collection_design_variants cdv
+    JOIN collection_designs cd ON cd.id = cdv.design_id
+    JOIN design_collections dc ON dc.id = cd.collection_id
+    JOIN customizable_product_colors col ON col.id = cdv.color_id
+    WHERE cdv.id = $1
+    `,
+    [cartItem.design_variant_id]
+  );
+
+  if (variantResult.rows.length === 0) {
+    return { ok: false, error: "This design is no longer available." };
+  }
+
+  const variant = variantResult.rows[0];
+
+  if (Number(variant.variant_design_id) !== Number(cartItem.design_id)) {
+    return {
+      ok: false,
+      error: "This design is no longer available for this product.",
+    };
+  }
+
+  if (
+    !variant.collection_is_active ||
+    !variant.design_is_active ||
+    Number(variant.collection_product_id) !== Number(cartItem.product_id)
+  ) {
+    return {
+      ok: false,
+      error: "This design is no longer available for this product.",
+    };
+  }
+
+  if (
+    !variant.variant_is_active ||
+    !variant.variant_color_is_active ||
+    Number(variant.variant_color_product_id) !== Number(cartItem.product_id)
+  ) {
+    return {
+      ok: false,
+      error: "This design is no longer available in the selected color.",
+    };
+  }
+
+  // Re-verify the Cart's stored canonical color still matches the
+  // variant's own color — Task H1 already enforces this at Add-to-Cart
+  // time, but nothing between then and checkout is trusted alone here.
+  if (cartItem.color !== variant.variant_color_name) {
+    return {
+      ok: false,
+      error: "This design is no longer available in the selected color.",
+    };
+  }
+
+  // Product must still exist and be active.
+  const productResult = await client.query(
+    "SELECT id, is_active FROM products WHERE id = $1",
+    [cartItem.product_id]
+  );
+
+  if (productResult.rows.length === 0 || !productResult.rows[0].is_active) {
+    return { ok: false, error: "This product is no longer available." };
+  }
+
+  const previewsResult = await client.query(
+    `
+    SELECT image_url
+    FROM collection_design_preview_images
+    WHERE variant_id = $1 AND is_active = true
+    ORDER BY is_main DESC, sort_order ASC, id ASC
+    `,
+    [cartItem.design_variant_id]
+  );
+
+  if (previewsResult.rows.length === 0) {
+    return {
+      ok: false,
+      error: "A preview for this design is no longer available.",
+    };
+  }
+
+  // Size: sized product requires an active size that's still allowed by
+  // this variant's own restrictions (if any); sizeless product accepts
+  // null/empty without inventing a fake Standard size.
+  const productSizesResult = await client.query(
+    "SELECT id, size_label FROM customizable_product_sizes WHERE product_id = $1 AND is_active = true",
+    [cartItem.product_id]
+  );
+  const hasSizes = productSizesResult.rows.length > 0;
+
+  if (hasSizes) {
+    const submittedSizeLabel =
+      typeof cartItem.size === "string" ? cartItem.size.trim().toLowerCase() : "";
+
+    if (!submittedSizeLabel) {
+      return {
+        ok: false,
+        error: "This design is no longer available in the selected size.",
+      };
+    }
+
+    const matchedSize = productSizesResult.rows.find(
+      (s) => s.size_label.trim().toLowerCase() === submittedSizeLabel
+    );
+
+    if (!matchedSize) {
+      return {
+        ok: false,
+        error: "This design is no longer available in the selected size.",
+      };
+    }
+
+    const restrictionsResult = await client.query(
+      "SELECT size_id FROM collection_design_variant_sizes WHERE variant_id = $1",
+      [cartItem.design_variant_id]
+    );
+
+    if (restrictionsResult.rows.length > 0) {
+      const allowedSizeIds = restrictionsResult.rows.map((r) => r.size_id);
+
+      if (!allowedSizeIds.includes(matchedSize.id)) {
+        return {
+          ok: false,
+          error: "This design is no longer available in the selected size.",
+        };
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    snapshot: {
+      design_variant_id: variant.variant_id,
+      design_color_id: variant.variant_color_id,
+      design_preview_image_url: previewsResult.rows[0].image_url,
+    },
+  };
+}
+
+/* ─────────────────────────────────────────────
+   Attaches additive, crash-safe design display fields to a list of
+   order_items rows — used by both GET /my and GET / (admin) below, so the
+   logic lives here once instead of twice.
+
+   Fallback order for design_preview_image_url, per spec:
+     1. design_preview_image_url_snapshot (new orders, Task H2)
+     2. design_image_url (older orders' generic design-cover snapshot)
+     3. current product-color gallery image (legacy orders predating both
+        snapshot columns — resolveMainImageUrl's own fallback chain also
+        covers tier 4, the general product image, and tier 5, null)
+   design_name / design_color_name reuse the existing design_label / color
+   snapshot columns rather than duplicating them under new names — both
+   are already permanent, immutable snapshots captured at order time.
+───────────────────────────────────────────── */
+async function attachOrderItemDesignFields(items) {
+  const productIds = [
+    ...new Set(items.map((item) => item.product_id).filter(Boolean)),
+  ];
+
+  const [productsResult, imagesResult, colorsResult] = await Promise.all([
+    pool.query("SELECT id, image_url FROM products WHERE id = ANY($1::int[])", [
+      productIds,
+    ]),
+    pool.query(
+      `
+      SELECT id, product_id, image_url, sort_order, is_main, color_id
+      FROM product_images
+      WHERE is_active = true AND product_id = ANY($1::int[])
+      ORDER BY product_id ASC, sort_order ASC, id ASC
+      `,
+      [productIds]
+    ),
+    pool.query(
+      `
+      SELECT id, product_id, color_name
+      FROM customizable_product_colors
+      WHERE product_id = ANY($1::int[])
+      `,
+      [productIds]
+    ),
+  ]);
+
+  const productImageUrlById = new Map(
+    productsResult.rows.map((p) => [p.id, p.image_url])
+  );
+  const imagesByProduct = groupImagesByProduct(imagesResult.rows);
+  const colorIdByProductAndName = new Map(
+    colorsResult.rows.map((row) => [
+      `${row.product_id}::${row.color_name}`,
+      row.id,
+    ])
+  );
+
+  return items.map((item) => {
+    const isDesignLinked = Boolean(item.design_label);
+
+    if (!isDesignLinked) {
+      return {
+        ...item,
+        design_name: null,
+        design_color_name: null,
+        design_preview_image_url: null,
+      };
+    }
+
+    let designPreviewImageUrl =
+      item.design_preview_image_url_snapshot || item.design_image_url || null;
+
+    if (!designPreviewImageUrl) {
+      const productImages = imagesByProduct.get(item.product_id) || [];
+      const matchedColorId = item.color
+        ? colorIdByProductAndName.get(`${item.product_id}::${item.color}`)
+        : undefined;
+      const colorImages =
+        matchedColorId !== undefined
+          ? productImages.filter(
+              (img) => Number(img.color_id) === Number(matchedColorId)
+            )
+          : [];
+      const relevantImages = colorImages.length > 0 ? colorImages : productImages;
+
+      designPreviewImageUrl = resolveMainImageUrl(
+        relevantImages,
+        productImageUrlById.get(item.product_id) || null
+      );
+    }
+
+    return {
+      ...item,
+      design_name: item.design_label,
+      design_color_name: item.color,
+      design_preview_image_url: designPreviewImageUrl,
+    };
+  });
 }
 
 /* ─────────────────────────────────────────────
@@ -51,6 +327,7 @@ const cartResult = await client.query(
     ci.custom_text,
     ci.custom_note,
     ci.design_id,
+    ci.design_variant_id,
 
     p.base_price,
     p.customization_extra_price,
@@ -88,6 +365,30 @@ const cartResult = await client.query(
     if (cartItems.length === 0) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "Your cart is empty." });
+    }
+
+    // 1.4 Revalidate every design-linked Cart row fresh, right before the
+    // order is created. Nothing about H1's earlier Add-to-Cart validation
+    // is trusted here — the owner may have renamed, deactivated, or
+    // reconfigured the design/color/size in the time since. On the first
+    // invalid row, roll back immediately: no order and no order_items are
+    // ever created, and the Cart itself is left untouched so the customer
+    // can fix the affected item and try again.
+    const designSnapshotByCartItemIndex = new Map();
+
+    for (let i = 0; i < cartItems.length; i++) {
+      const item = cartItems[i];
+
+      if (!item.design_id) continue;
+
+      const validation = await validateAndSnapshotDesignVariant(client, item);
+
+      if (!validation.ok) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: validation.error });
+      }
+
+      designSnapshotByCartItemIndex.set(i, validation.snapshot);
     }
 
     // 1.5 Aggregate cart quantity per product (same product can appear as
@@ -146,8 +447,13 @@ const cartResult = await client.query(
 
     const order = orderResult.rows[0];
 
-   // 4. Copy cart items into order_items (snapshot name + price + customization details)
-for (const item of cartItems) {
+   // 4. Copy cart items into order_items (snapshot name + price + customization
+   // details). Design-linked rows additionally carry the fresh snapshot
+   // computed during revalidation above — never the raw Cart/client values.
+for (let i = 0; i < cartItems.length; i++) {
+  const item = cartItems[i];
+  const designSnapshot = designSnapshotByCartItemIndex.get(i) || null;
+
   await client.query(
     `
     INSERT INTO order_items
@@ -167,9 +473,12 @@ for (const item of cartItems) {
       custom_note,
       design_label,
       collection_name,
-      design_image_url
+      design_image_url,
+      design_variant_id,
+      design_color_id_snapshot,
+      design_preview_image_url_snapshot
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
     `,
     [
       order.id,
@@ -189,6 +498,10 @@ for (const item of cartItems) {
       item.design_label || null,
       item.collection_name || null,
       item.design_image_url || null,
+
+      designSnapshot?.design_variant_id || null,
+      designSnapshot?.design_color_id || null,
+      designSnapshot?.design_preview_image_url || null,
     ]
   );
 }
@@ -246,9 +559,13 @@ router.get("/my", authMiddleware, async (req, res) => {
       [orderIds]
     );
 
+    const itemsWithDesignFields = await attachOrderItemDesignFields(
+      itemsResult.rows
+    );
+
     // Group items by order_id
     const itemsByOrder = {};
-    for (const item of itemsResult.rows) {
+    for (const item of itemsWithDesignFields) {
       if (!itemsByOrder[item.order_id]) itemsByOrder[item.order_id] = [];
       itemsByOrder[item.order_id].push(item);
     }
@@ -291,8 +608,12 @@ router.get("/", authMiddleware, adminOnly, async (req, res) => {
       [orderIds]
     );
 
+    const itemsWithDesignFields = await attachOrderItemDesignFields(
+      itemsResult.rows
+    );
+
     const itemsByOrder = {};
-    for (const item of itemsResult.rows) {
+    for (const item of itemsWithDesignFields) {
       if (!itemsByOrder[item.order_id]) itemsByOrder[item.order_id] = [];
       itemsByOrder[item.order_id].push(item);
     }

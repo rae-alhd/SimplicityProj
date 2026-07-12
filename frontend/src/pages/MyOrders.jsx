@@ -139,12 +139,13 @@ function OrderCard({ order }) {
           )}
           <div>
             <strong>Design:</strong> {item.design_label}
+            {item.design_color_name ? ` — ${item.design_color_name}` : ""}
           </div>
         </div>
 
-        {item.design_image_url && (
+        {(item.design_preview_image_url || item.design_image_url) && (
           <img
-            src={item.design_image_url}
+            src={item.design_preview_image_url || item.design_image_url}
             alt={item.design_label}
             style={s.designThumb}
           />
