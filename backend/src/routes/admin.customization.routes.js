@@ -788,4 +788,412 @@ router.delete("/designs/:id", async (req, res) => {
   }
 });
 
+// -------------------- DESIGN/COLOR COMPATIBILITY (VARIANTS) --------------------
+// Design Studio Task E1: manage collection_design_variants (which colors a
+// design is allowed on) and collection_design_variant_sizes (optional size
+// restrictions per variant). Preview-image endpoints are a later task.
+
+// Resolves collection -> design -> product_id, validating that the design
+// belongs to the given collection along the way. Returns null if there is
+// no design with that id inside that collection.
+async function getCollectionDesignProduct(collectionId, designId) {
+  const result = await pool.query(
+    `
+    SELECT
+      cd.id AS design_id,
+      cd.collection_id,
+      dc.product_id
+    FROM collection_designs cd
+    JOIN design_collections dc ON dc.id = cd.collection_id
+    WHERE cd.id = $1 AND cd.collection_id = $2
+    `,
+    [designId, collectionId]
+  );
+
+  return result.rows[0] || null;
+}
+
+// Resolves a variant's product via variant -> design -> collection -> product.
+// Returns null if the variant doesn't exist. Accepts an optional pg client
+// so callers running inside a transaction reuse the same connection.
+async function getVariantProduct(variantId, queryable = pool) {
+  const result = await queryable.query(
+    `
+    SELECT
+      cdv.id AS variant_id,
+      cdv.design_id,
+      dc.product_id
+    FROM collection_design_variants cdv
+    JOIN collection_designs cd ON cd.id = cdv.design_id
+    JOIN design_collections dc ON dc.id = cd.collection_id
+    WHERE cdv.id = $1
+    `,
+    [variantId]
+  );
+
+  return result.rows[0] || null;
+}
+
+function withColorInfo(variantRow, colorRow) {
+  return {
+    ...variantRow,
+    color_name: colorRow.color_name,
+    color_hex: colorRow.color_hex,
+  };
+}
+
+// GET /api/admin/customization/collections/:collectionId/designs/:designId/variants
+router.get(
+  "/collections/:collectionId/designs/:designId/variants",
+  async (req, res) => {
+    try {
+      const { collectionId, designId } = req.params;
+
+      const collectionCheck = await pool.query(
+        "SELECT id FROM design_collections WHERE id = $1",
+        [collectionId]
+      );
+      if (collectionCheck.rows.length === 0) {
+        return res.status(404).json({ error: "Collection not found" });
+      }
+
+      const designProduct = await getCollectionDesignProduct(
+        collectionId,
+        designId
+      );
+      if (!designProduct) {
+        return res
+          .status(404)
+          .json({ error: "Design not found in this collection" });
+      }
+
+      // Intentionally not filtering by is_active — inactive rows must be
+      // returned too, so the admin can reactivate them.
+      const variantsResult = await pool.query(
+        `
+        SELECT
+          cdv.id,
+          cdv.design_id,
+          cdv.color_id,
+          c.color_name,
+          c.color_hex,
+          cdv.is_active,
+          cdv.sort_order
+        FROM collection_design_variants cdv
+        JOIN customizable_product_colors c ON c.id = cdv.color_id
+        WHERE cdv.design_id = $1
+        ORDER BY cdv.sort_order ASC, cdv.id ASC
+        `,
+        [designId]
+      );
+
+      const variantIds = variantsResult.rows.map((v) => v.id);
+
+      const sizesResult = await pool.query(
+        `
+        SELECT
+          cdvs.variant_id,
+          s.id,
+          s.size_label,
+          s.sort_order
+        FROM collection_design_variant_sizes cdvs
+        JOIN customizable_product_sizes s ON s.id = cdvs.size_id
+        WHERE cdvs.variant_id = ANY($1::int[])
+        ORDER BY cdvs.variant_id ASC, s.sort_order ASC, s.id ASC
+        `,
+        [variantIds]
+      );
+
+      const sizesByVariant = {};
+      for (const row of sizesResult.rows) {
+        if (!sizesByVariant[row.variant_id]) {
+          sizesByVariant[row.variant_id] = [];
+        }
+        sizesByVariant[row.variant_id].push({
+          id: row.id,
+          size_label: row.size_label,
+          sort_order: row.sort_order,
+        });
+      }
+
+      const variants = variantsResult.rows.map((v) => ({
+        id: v.id,
+        design_id: v.design_id,
+        color_id: v.color_id,
+        color_name: v.color_name,
+        color_hex: v.color_hex,
+        is_active: v.is_active,
+        sort_order: v.sort_order,
+        size_restrictions: sizesByVariant[v.id] || [],
+      }));
+
+      res.json(variants);
+    } catch (err) {
+      console.error("Get design variants error:", err);
+      res.status(500).json({ error: "Server error" });
+    }
+  }
+);
+
+// POST /api/admin/customization/collections/:collectionId/designs/:designId/variants
+router.post(
+  "/collections/:collectionId/designs/:designId/variants",
+  async (req, res) => {
+    try {
+      const { collectionId, designId } = req.params;
+      const { color_id, sort_order } = req.body;
+
+      const collectionCheck = await pool.query(
+        "SELECT id FROM design_collections WHERE id = $1",
+        [collectionId]
+      );
+      if (collectionCheck.rows.length === 0) {
+        return res.status(404).json({ error: "Collection not found" });
+      }
+
+      const designProduct = await getCollectionDesignProduct(
+        collectionId,
+        designId
+      );
+      if (!designProduct) {
+        return res
+          .status(404)
+          .json({ error: "Design not found in this collection" });
+      }
+
+      const parsedColorId = Number(color_id);
+      if (!Number.isInteger(parsedColorId) || parsedColorId <= 0) {
+        return res.status(400).json({ error: "A valid color_id is required" });
+      }
+
+      let parsedSortOrder = 0;
+      if (sort_order !== undefined) {
+        parsedSortOrder = Number(sort_order);
+        if (!Number.isInteger(parsedSortOrder)) {
+          return res
+            .status(400)
+            .json({ error: "sort_order must be an integer" });
+        }
+      }
+
+      // Never trust the supplied color_id alone — it must exist AND belong
+      // to the same product the design's collection belongs to.
+      const colorCheck = await pool.query(
+        "SELECT id, product_id, color_name, color_hex FROM customizable_product_colors WHERE id = $1",
+        [parsedColorId]
+      );
+      if (colorCheck.rows.length === 0) {
+        return res.status(400).json({ error: "Color not found" });
+      }
+
+      const color = colorCheck.rows[0];
+      if (Number(color.product_id) !== Number(designProduct.product_id)) {
+        return res.status(400).json({
+          error: "Selected color does not belong to this design's product",
+        });
+      }
+
+      const existing = await pool.query(
+        "SELECT * FROM collection_design_variants WHERE design_id = $1 AND color_id = $2",
+        [designId, parsedColorId]
+      );
+
+      if (existing.rows.length > 0) {
+        const variant = existing.rows[0];
+
+        if (variant.is_active) {
+          return res.status(409).json({
+            error: "This design is already active for the selected color",
+          });
+        }
+
+        const reactivated = await pool.query(
+          `
+          UPDATE collection_design_variants
+          SET is_active = true, sort_order = $1
+          WHERE id = $2
+          RETURNING *
+          `,
+          [parsedSortOrder, variant.id]
+        );
+
+        return res.json(withColorInfo(reactivated.rows[0], color));
+      }
+
+      const inserted = await pool.query(
+        `
+        INSERT INTO collection_design_variants (design_id, color_id, sort_order)
+        VALUES ($1, $2, $3)
+        RETURNING *
+        `,
+        [designId, parsedColorId, parsedSortOrder]
+      );
+
+      res.status(201).json(withColorInfo(inserted.rows[0], color));
+    } catch (err) {
+      // Defensive backstop against a race between the existence check above
+      // and the insert (two concurrent requests for the same design+color).
+      if (err.code === "23505") {
+        return res.status(409).json({
+          error: "This design is already active for the selected color",
+        });
+      }
+      console.error("Add design variant error:", err);
+      res.status(500).json({ error: "Server error" });
+    }
+  }
+);
+
+// PATCH /api/admin/customization/variants/:variantId
+router.patch("/variants/:variantId", async (req, res) => {
+  try {
+    const { variantId } = req.params;
+    const { is_active, sort_order } = req.body;
+
+    if (is_active === undefined && sort_order === undefined) {
+      return res.status(400).json({
+        error: "At least one of is_active or sort_order is required",
+      });
+    }
+
+    if (is_active !== undefined && typeof is_active !== "boolean") {
+      return res.status(400).json({ error: "is_active must be a boolean" });
+    }
+
+    let parsedSortOrder;
+    if (sort_order !== undefined) {
+      parsedSortOrder = Number(sort_order);
+      if (!Number.isInteger(parsedSortOrder)) {
+        return res
+          .status(400)
+          .json({ error: "sort_order must be an integer" });
+      }
+    }
+
+    // design_id/color_id are intentionally never read from the body and
+    // never touched by this UPDATE — this endpoint cannot change them.
+    // Deactivating here only flips is_active; collection_design_variant_sizes
+    // rows for this variant are untouched (no hard delete anywhere).
+    const result = await pool.query(
+      `
+      UPDATE collection_design_variants
+      SET
+        is_active = COALESCE($1, is_active),
+        sort_order = COALESCE($2, sort_order)
+      WHERE id = $3
+      RETURNING *
+      `,
+      [is_active, parsedSortOrder, variantId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Variant not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Update design variant error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// PUT /api/admin/customization/variants/:variantId/sizes
+router.put("/variants/:variantId/sizes", async (req, res) => {
+  const { variantId } = req.params;
+  const { size_ids } = req.body;
+
+  if (!Array.isArray(size_ids)) {
+    return res.status(400).json({ error: "size_ids must be an array" });
+  }
+
+  // Duplicates are normalized (deduped) rather than rejected — this keeps
+  // the endpoint idempotent for an admin UI that re-submits the full
+  // selected-size set on every save, rather than forcing the caller to
+  // dedupe client-side first.
+  const uniqueSizeIds = [...new Set(size_ids.map((id) => Number(id)))];
+
+  for (const id of uniqueSizeIds) {
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({
+        error: "size_ids must contain only valid positive integers",
+      });
+    }
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const variant = await getVariantProduct(variantId, client);
+    if (!variant) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Variant not found" });
+    }
+
+    // Never trust the supplied size_ids alone — every one must exist, be
+    // active, and belong to the same product as the variant's design.
+    if (uniqueSizeIds.length > 0) {
+      const sizesResult = await client.query(
+        `
+        SELECT id
+        FROM customizable_product_sizes
+        WHERE id = ANY($1::int[]) AND product_id = $2 AND is_active = true
+        `,
+        [uniqueSizeIds, variant.product_id]
+      );
+
+      const validIds = new Set(sizesResult.rows.map((r) => r.id));
+      const invalidIds = uniqueSizeIds.filter((id) => !validIds.has(id));
+
+      if (invalidIds.length > 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: `The following size ids are invalid, inactive, or belong to a different product: ${invalidIds.join(", ")}`,
+        });
+      }
+    }
+
+    await client.query(
+      "DELETE FROM collection_design_variant_sizes WHERE variant_id = $1",
+      [variantId]
+    );
+
+    if (uniqueSizeIds.length > 0) {
+      const valuePlaceholders = uniqueSizeIds
+        .map((_, i) => `($1, $${i + 2})`)
+        .join(", ");
+
+      await client.query(
+        `INSERT INTO collection_design_variant_sizes (variant_id, size_id) VALUES ${valuePlaceholders}`,
+        [variantId, ...uniqueSizeIds]
+      );
+    }
+
+    // Empty array (or an all-sizes selection normalized down to zero
+    // restriction rows never happens here, since we only ever insert what
+    // was validated) means: zero rows -> all of the product's sizes allowed.
+    const finalResult = await client.query(
+      `
+      SELECT s.id, s.size_label, s.sort_order
+      FROM collection_design_variant_sizes cdvs
+      JOIN customizable_product_sizes s ON s.id = cdvs.size_id
+      WHERE cdvs.variant_id = $1
+      ORDER BY s.sort_order ASC, s.id ASC
+      `,
+      [variantId]
+    );
+
+    await client.query("COMMIT");
+
+    res.json(finalResult.rows);
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("Update variant size restrictions error:", err);
+    res.status(500).json({ error: "Server error" });
+  } finally {
+    client.release();
+  }
+});
+
 module.exports = router;
