@@ -58,16 +58,41 @@ export function getCompatibleVariant(design, selectedColor, selectedSize, hasSiz
   return matches[0] || null;
 }
 
-export function getCompatibleDesigns(collection, selectedColor, selectedSize, hasSizes) {
-  const designs = collection?.designs || [];
-  return designs.filter(
-    (design) => getCompatibleVariant(design, selectedColor, selectedSize, hasSizes) !== null
+/**
+ * Task I2: resolves a design's owner-assigned placement/customization
+ * option, or null if the design isn't placement-ready.
+ *
+ * `options` must be the product's ACTIVE options list (config.options from
+ * the public customization response, which the backend already filters to
+ * `is_active = true AND product_id = productId`) — so finding the assigned
+ * id in that list already proves it's active AND belongs to this product.
+ * A design with no customization_option_id, or whose assigned id isn't in
+ * that list (deactivated/deleted/never assigned), returns null here.
+ */
+export function getAssignedActiveOption(design, options) {
+  if (!design || design.customization_option_id === null || design.customization_option_id === undefined) {
+    return null;
+  }
+
+  return (
+    (options || []).find((option) =>
+      idsMatch(option.id, design.customization_option_id)
+    ) || null
   );
 }
 
-export function getCompatibleCollections(collections, selectedColor, selectedSize, hasSizes) {
+export function getCompatibleDesigns(collection, selectedColor, selectedSize, hasSizes, options) {
+  const designs = collection?.designs || [];
+  return designs.filter(
+    (design) =>
+      getCompatibleVariant(design, selectedColor, selectedSize, hasSizes) !== null &&
+      getAssignedActiveOption(design, options) !== null
+  );
+}
+
+export function getCompatibleCollections(collections, selectedColor, selectedSize, hasSizes, options) {
   return (collections || []).filter(
     (collection) =>
-      getCompatibleDesigns(collection, selectedColor, selectedSize, hasSizes).length > 0
+      getCompatibleDesigns(collection, selectedColor, selectedSize, hasSizes, options).length > 0
   );
 }

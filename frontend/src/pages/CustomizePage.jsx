@@ -7,6 +7,7 @@ import {
   getCompatibleVariant,
   getCompatibleDesigns,
   getCompatibleCollections,
+  getAssignedActiveOption,
 } from "../utils/designCompatibility";
 
 // /api/customization/products and /api/customization/products/:id do not
@@ -15,6 +16,24 @@ import {
 // product as out of stock in the meantime).
 function isProductOutOfStock(p) {
   return p?.stock_quantity !== undefined && Number(p.stock_quantity || 0) <= 0;
+}
+
+// Re-resolves an already-selected design against a newly chosen color or
+// size, so a color/size change doesn't blow away a design that's still
+// perfectly valid under the new selection. Returns { variant, option } only
+// when BOTH the variant and the design's owner-assigned placement resolve —
+// otherwise null, meaning the caller must clear the design rather than
+// guess or fall back to a different option.
+function resolveDesignForSelection(design, color, size, hasSizesValue, options) {
+  if (!design || !color) return null;
+
+  const variant = getCompatibleVariant(design, color, size, hasSizesValue);
+  if (!variant) return null;
+
+  const option = getAssignedActiveOption(design, options);
+  if (!option) return null;
+
+  return { variant, option };
 }
 
 function CustomizePage() {
@@ -82,7 +101,11 @@ function CustomizePage() {
 
         setSelectedColor(initialColor);
         setSelectedSize(initialSize);
-        setSelectedOption(data.options?.[0] || null);
+        // Task I2: selectedOption is no longer independently chosen by the
+        // customer — it's only ever set as a side effect of selecting a
+        // design (see the design card onClick below), resolved from that
+        // design's own owner-assigned placement. Never default it here.
+        setSelectedOption(null);
         setQuantity(1);
 
         // Auto-select the first collection that's actually compatible with
@@ -93,7 +116,8 @@ function CustomizePage() {
           data.collections || [],
           initialColor,
           initialSize,
-          initialHasSizes
+          initialHasSizes,
+          data.options || []
         )[0];
 
         setSelectedCollectionId(
@@ -112,31 +136,76 @@ function CustomizePage() {
   }, [selectedProductId]);
 
   function selectCollection(collectionId) {
-    // Only preserve the current design/variant if it already belonged to
-    // the collection being (re)selected — otherwise both are stale.
+    // Only preserve the current design/variant/option if it already
+    // belonged to the collection being (re)selected — otherwise all three
+    // are stale. selectedOption is only ever a side effect of selectedDesign
+    // (Task I2), so it's preserved or cleared together with it, never alone.
     const preserveDesign =
       selectedDesign && selectedDesign.collection_id === collectionId;
 
     setSelectedCollectionId(collectionId);
     setSelectedDesign(preserveDesign ? selectedDesign : null);
     setSelectedDesignVariant(preserveDesign ? selectedDesignVariant : null);
+    setSelectedOption(preserveDesign ? selectedOption : null);
+  }
+
+  // Shared by color and size changes: if a design was already selected, try
+  // to keep it selected under the new color/size rather than clearing it
+  // outright — only falls back to clearing when the same design genuinely
+  // isn't compatible with the new selection.
+  function preserveOrClearDesignFor(nextColor, nextSize) {
+    if (!selectedDesign) {
+      // No design was selected — nothing to preserve, unchanged from before.
+      setSelectedCollectionId(null);
+      setSelectedDesignVariant(null);
+      setSelectedOption(null);
+      return;
+    }
+
+    const resolved = resolveDesignForSelection(
+      selectedDesign,
+      nextColor,
+      nextSize,
+      hasSizes,
+      config?.options
+    );
+
+    if (resolved) {
+      // Same design, same collection — just swap in the new color/size's
+      // variant and re-resolve its (unchanged) owner-assigned placement.
+      setSelectedDesignVariant(resolved.variant);
+      setSelectedOption(resolved.option);
+      return;
+    }
+
+    // The design isn't compatible with the new color/size — clear it, but
+    // only clear the collection too if it has no other ready designs left
+    // for the new selection. Do not silently substitute another design.
+    setSelectedDesign(null);
+    setSelectedDesignVariant(null);
+    setSelectedOption(null);
+
+    const collectionStillReady = getCompatibleCollections(
+      config?.collections,
+      nextColor,
+      nextSize,
+      hasSizes,
+      config?.options
+    ).some((c) => c.id === selectedCollectionId);
+
+    if (!collectionStillReady) {
+      setSelectedCollectionId(null);
+    }
   }
 
   function handleColorSelect(color) {
     setSelectedColor(color);
-    // Color changed: any collection/design/variant chosen for the previous
-    // color may no longer be compatible — clear all of it rather than risk
-    // showing a hidden/incompatible selection.
-    setSelectedCollectionId(null);
-    setSelectedDesign(null);
-    setSelectedDesignVariant(null);
+    preserveOrClearDesignFor(color, selectedSize);
   }
 
   function handleSizeSelect(size) {
     setSelectedSize(size);
-    setSelectedCollectionId(null);
-    setSelectedDesign(null);
-    setSelectedDesignVariant(null);
+    preserveOrClearDesignFor(selectedColor, size);
   }
 
   const product = config?.product;
@@ -157,7 +226,8 @@ function CustomizePage() {
         config?.collections,
         selectedColor,
         selectedSize,
-        hasSizes
+        hasSizes,
+        config?.options
       ),
     [config, selectedColor, selectedSize, hasSizes]
   );
@@ -168,8 +238,14 @@ function CustomizePage() {
 
   const compatibleDesignsForActiveCollection = useMemo(
     () =>
-      getCompatibleDesigns(activeCollection, selectedColor, selectedSize, hasSizes),
-    [activeCollection, selectedColor, selectedSize, hasSizes]
+      getCompatibleDesigns(
+        activeCollection,
+        selectedColor,
+        selectedSize,
+        hasSizes,
+        config?.options
+      ),
+    [activeCollection, selectedColor, selectedSize, hasSizes, config]
   );
 
   const totalPrice = useMemo(() => {
@@ -211,6 +287,7 @@ function CustomizePage() {
   function handleClearDesignPreview() {
     setSelectedDesign(null);
     setSelectedDesignVariant(null);
+    setSelectedOption(null);
   }
 
   const handleAddToCart = async () => {
@@ -224,22 +301,27 @@ function CustomizePage() {
     if (
       !product ||
       (hasColors && !selectedColor) ||
-      (hasSizes && !selectedSize) ||
-      !selectedOption
+      (hasSizes && !selectedSize)
     ) {
-      alert("Please choose product, color, size, and customization option.");
+      alert("Please choose product, color, and size.");
       return;
     }
 
-    // A design was picked but no compatible variant could be resolved for
-    // it (e.g. a stale selection somehow survived a color/size change) —
-    // block only this case. Products/flows that never require a design at
-    // all are untouched: selectedDesign stays null for them, so this check
-    // never fires.
-    if (selectedDesign && !selectedDesignVariant) {
-      alert(
-        "The selected design is no longer available for this color and size. Please choose another design."
-      );
+    // Task I2: selectedOption is never chosen independently anymore — it's
+    // only ever set as a side effect of picking a placement-ready design.
+    // For a product with a design system (showDesignSection), a complete
+    // design selection is required: the design, its color/size-compatible
+    // variant, AND its resolved placement all together, or none at all.
+    if (showDesignSection) {
+      if (!selectedDesign || !selectedDesignVariant || !selectedOption) {
+        alert("Please choose an available design.");
+        return;
+      }
+    } else if (!selectedOption) {
+      // A customizable product with no design collections configured has no
+      // way to resolve a placement on this page — block rather than send an
+      // incomplete request, using the same customer-facing wording.
+      alert("Please choose an available design.");
       return;
     }
 
@@ -312,8 +394,8 @@ function CustomizePage() {
         <p style={styles.eyebrow}>Simplicity Custom Studio</p>
         <h1 style={styles.title}>Design Your Hoodie</h1>
         <p style={styles.subtitle}>
-          Choose your base, color, size, and design placement. Preview the vibe
-          before adding it to your cart.
+          Choose your base, color, size, and design. Preview the vibe before
+          adding it to your cart.
         </p>
       </section>
 
@@ -585,14 +667,36 @@ function CustomizePage() {
                               <button
                                 key={design.id}
                                 onClick={() => {
+                                  // Task I2: the design list shown here is
+                                  // already filtered to placement-ready
+                                  // designs (getCompatibleDesigns checks
+                                  // getAssignedActiveOption too), so this
+                                  // should always resolve. Still verified
+                                  // defensively — a design is never selected
+                                  // without both its variant AND its option
+                                  // resolving, and no other option can ever
+                                  // be substituted in.
                                   const variant = getCompatibleVariant(
                                     design,
                                     selectedColor,
                                     selectedSize,
                                     hasSizes
                                   );
+                                  const option = getAssignedActiveOption(
+                                    design,
+                                    config?.options
+                                  );
+
+                                  if (!variant || !option) {
+                                    alert(
+                                      "Please choose an available design."
+                                    );
+                                    return;
+                                  }
+
                                   setSelectedDesign(design);
                                   setSelectedDesignVariant(variant);
+                                  setSelectedOption(option);
                                   setIsDesignPickerOpen(false);
                                 }}
                                 style={{
@@ -630,7 +734,18 @@ function CustomizePage() {
                                 style={styles.compactSummaryImage}
                               />
                             </div>
-                            <strong>{selectedDesign.name}</strong>
+                            <div>
+                              <strong>{selectedDesign.name}</strong>
+                              {/* Task I2: read-only — the owner assigns this
+                                  placement per design; the customer can no
+                                  longer change it here. */}
+                              <p style={styles.placementLine}>
+                                Placement:{" "}
+                                {selectedDesign.customization_option_name ||
+                                  selectedOption?.option_label ||
+                                  ""}
+                              </p>
+                            </div>
                           </>
                         ) : (
                           <span style={styles.muted}>
@@ -648,29 +763,6 @@ function CustomizePage() {
                   )}
                 </div>
               )}
-
-              <div style={styles.controlBlock}>
-                <label style={styles.label}>Design Placement</label>
-                <div style={styles.optionList}>
-                  {config?.options?.map((o) => (
-                    <button
-                      key={o.id}
-                      onClick={() => setSelectedOption(o)}
-                      style={{
-                        ...styles.optionCard,
-                        border:
-                          selectedOption?.id === o.id
-                            ? "2px solid #111"
-                            : "1px solid #e5e0d8",
-                      }}
-                    >
-                      <span>{o.option_label}</span>
-                      <small>{o.description}</small>
-                      <strong>+${Number(o.extra_price || 0).toFixed(2)}</strong>
-                    </button>
-                  ))}
-                </div>
-              </div>
 
               <div style={styles.quantityRow}>
                 <button onClick={() => setQuantity((q) => Math.max(1, q - 1))}>
@@ -1043,18 +1135,10 @@ const styles = {
     cursor: "pointer",
     fontFamily: "Georgia, serif",
   },
-  optionList: {
-    display: "grid",
-    gap: "10px",
-  },
-  optionCard: {
-    textAlign: "left",
-    background: "#fff",
-    padding: "14px",
-    cursor: "pointer",
-    display: "grid",
-    gap: "5px",
-    fontFamily: "Georgia, serif",
+  placementLine: {
+    fontSize: "12px",
+    color: "#9b8c73",
+    margin: "2px 0 0",
   },
   quantityRow: {
     display: "flex",
