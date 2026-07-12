@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import AdminNav from "../components/AdminNav";
 import API_BASE from "../config/api";
@@ -49,6 +49,10 @@ export default function AdminCustomization() {
   const [newDesignName, setNewDesignName] = useState("");
   const [newDesignFile, setNewDesignFile] = useState(null);
 
+  // Which design's "Available Colors & Sizes" editor is currently open —
+  // only one at a time, matching the existing one-collection-open pattern.
+  const [expandedDesignId, setExpandedDesignId] = useState(null);
+
   useEffect(() => {
     if (!token) {
       navigate("/login");
@@ -60,6 +64,11 @@ export default function AdminCustomization() {
 
   useEffect(() => {
     if (selectedProductId) {
+      // Switching products invalidates whatever collection/design/design
+      // editor was open — those belonged to the previous product's data.
+      setSelectedCollectionId(null);
+      setDesigns([]);
+      setExpandedDesignId(null);
       loadCustomizationData(selectedProductId);
     }
   }, [selectedProductId]);
@@ -288,6 +297,7 @@ export default function AdminCustomization() {
       if (selectedCollectionId === id) {
         setSelectedCollectionId(null);
         setDesigns([]);
+        setExpandedDesignId(null);
       }
 
       loadCustomizationData(selectedProductId);
@@ -380,9 +390,14 @@ export default function AdminCustomization() {
 
       setNewDesignName("");
       setNewDesignFile(null);
+      setExpandedDesignId(null);
 
       return next;
     });
+  }
+
+  function toggleDesignAvailability(designId) {
+    setExpandedDesignId((current) => (current === designId ? null : designId));
   }
 
   const selectedProduct = products.find(
@@ -777,36 +792,60 @@ export default function AdminCustomization() {
                           ) : (
                             <div style={styles.exampleGrid}>
                               {designs.map((design) => (
-                                <div
-                                  key={design.id}
-                                  style={styles.exampleCard}
-                                >
-                                  <img
-                                    src={design.image_url}
-                                    alt={design.name}
-                                    style={styles.exampleImg}
-                                  />
-                                  <strong>{design.name}</strong>
-                                  <p
-                                    style={{
-                                      color: "#999",
-                                      fontSize: "12px",
-                                      margin: "4px 0 8px",
-                                    }}
-                                  >
-                                    {design.is_active
-                                      ? "Active"
-                                      : "Inactive"}
-                                  </p>
-                                  <button
-                                    onClick={() =>
-                                      deactivateDesign(design.id)
-                                    }
-                                    style={styles.deleteBtn}
-                                  >
-                                    Deactivate
-                                  </button>
-                                </div>
+                                <Fragment key={design.id}>
+                                  <div style={styles.exampleCard}>
+                                    <img
+                                      src={design.image_url}
+                                      alt={design.name}
+                                      style={styles.exampleImg}
+                                    />
+                                    <strong>{design.name}</strong>
+                                    <p
+                                      style={{
+                                        color: "#999",
+                                        fontSize: "12px",
+                                        margin: "4px 0 8px",
+                                      }}
+                                    >
+                                      {design.is_active
+                                        ? "Active"
+                                        : "Inactive"}
+                                    </p>
+                                    <button
+                                      onClick={() =>
+                                        deactivateDesign(design.id)
+                                      }
+                                      style={styles.deleteBtn}
+                                    >
+                                      Deactivate
+                                    </button>
+                                    <button
+                                      onClick={() =>
+                                        toggleDesignAvailability(design.id)
+                                      }
+                                      style={styles.manageAvailabilityBtn(
+                                        expandedDesignId === design.id
+                                      )}
+                                    >
+                                      {expandedDesignId === design.id
+                                        ? "Hide Availability"
+                                        : "Manage Availability"}
+                                    </button>
+                                  </div>
+
+                                  {expandedDesignId === design.id && (
+                                    <div style={styles.availabilityPanel}>
+                                      <DesignAvailabilityEditor
+                                        key={design.id}
+                                        authFetch={authFetch}
+                                        collectionId={collection.id}
+                                        designId={design.id}
+                                        productColors={colors}
+                                        productSizes={sizes}
+                                      />
+                                    </div>
+                                  )}
+                                </Fragment>
                               ))}
                             </div>
                           )}
@@ -821,6 +860,321 @@ export default function AdminCustomization() {
         )}
       </div>
       </div>
+    </>
+  );
+}
+
+// Per-design "Available Colors & Sizes" editor. Mounted with key={designId}
+// by the parent so switching designs fully resets this component's state
+// (variants, drafts, errors) instead of carrying anything stale over.
+function DesignAvailabilityEditor({
+  authFetch,
+  collectionId,
+  designId,
+  productColors,
+  productSizes,
+}) {
+  const [variants, setVariants] = useState([]);
+  const [variantsLoading, setVariantsLoading] = useState(true);
+  const [variantsError, setVariantsError] = useState("");
+
+  // Keyed by color_id — which color's enable/reactivate/deactivate action
+  // is currently in flight, and any error for that specific action.
+  const [pendingColorId, setPendingColorId] = useState(null);
+  const [colorActionError, setColorActionError] = useState({});
+
+  // Keyed by variant_id — draft (unsaved) size selections, save-in-flight
+  // state, and any save error, kept separate so a failed save never loses
+  // the admin's in-progress selection.
+  const [draftSizesByVariant, setDraftSizesByVariant] = useState({});
+  const [savingVariantId, setSavingVariantId] = useState(null);
+  const [sizeSaveError, setSizeSaveError] = useState({});
+  const [sizeSaveSuccess, setSizeSaveSuccess] = useState({});
+
+  useEffect(() => {
+    loadVariants();
+  }, []);
+
+  async function loadVariants() {
+    try {
+      setVariantsLoading(true);
+      setVariantsError("");
+
+      const data = await authFetch(
+        `${API_BASE}/admin/customization/collections/${collectionId}/designs/${designId}/variants`
+      );
+      const list = Array.isArray(data) ? data : [];
+      setVariants(list);
+
+      const drafts = {};
+      for (const v of list) {
+        drafts[v.id] = (v.size_restrictions || []).map((s) => s.id);
+      }
+      setDraftSizesByVariant(drafts);
+    } catch (err) {
+      setVariantsError(err.message);
+    } finally {
+      setVariantsLoading(false);
+    }
+  }
+
+  function findVariantForColor(colorId) {
+    return variants.find((v) => Number(v.color_id) === Number(colorId));
+  }
+
+  async function enableColor(colorId) {
+    setPendingColorId(colorId);
+    setColorActionError((prev) => ({ ...prev, [colorId]: "" }));
+
+    try {
+      // The backend POST endpoint already inserts-or-reactivates: if no
+      // row exists it creates one, if an inactive row exists it reactivates
+      // that same row (no duplicates), if an active row exists it 409s.
+      await authFetch(
+        `${API_BASE}/admin/customization/collections/${collectionId}/designs/${designId}/variants`,
+        {
+          method: "POST",
+          body: JSON.stringify({ color_id: colorId }),
+        }
+      );
+      await loadVariants();
+    } catch (err) {
+      setColorActionError((prev) => ({ ...prev, [colorId]: err.message }));
+    } finally {
+      setPendingColorId(null);
+    }
+  }
+
+  async function setVariantActive(variant, isActive) {
+    setPendingColorId(variant.color_id);
+    setColorActionError((prev) => ({ ...prev, [variant.color_id]: "" }));
+
+    try {
+      // Reactivating a known row (we already have its id) goes through
+      // PATCH rather than POST — more direct than re-deriving the row via
+      // collection/design/color_id when we already hold its identity.
+      await authFetch(`${API_BASE}/admin/customization/variants/${variant.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ is_active: isActive }),
+      });
+      await loadVariants();
+    } catch (err) {
+      setColorActionError((prev) => ({
+        ...prev,
+        [variant.color_id]: err.message,
+      }));
+    } finally {
+      setPendingColorId(null);
+    }
+  }
+
+  function toggleDraftSize(variantId, sizeId) {
+    setDraftSizesByVariant((prev) => {
+      const current = prev[variantId] || [];
+      const next = current.includes(sizeId)
+        ? current.filter((id) => id !== sizeId)
+        : [...current, sizeId];
+      return { ...prev, [variantId]: next };
+    });
+  }
+
+  async function saveSizes(variant) {
+    setSavingVariantId(variant.id);
+    setSizeSaveError((prev) => ({ ...prev, [variant.id]: "" }));
+
+    try {
+      const sizeIds = draftSizesByVariant[variant.id] || [];
+      const updatedSizes = await authFetch(
+        `${API_BASE}/admin/customization/variants/${variant.id}/sizes`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ size_ids: sizeIds }),
+        }
+      );
+
+      // Patch just this one variant's saved size_restrictions locally
+      // instead of refetching the whole list — keeps other variants'
+      // in-progress drafts untouched.
+      setVariants((prev) =>
+        prev.map((v) =>
+          v.id === variant.id ? { ...v, size_restrictions: updatedSizes } : v
+        )
+      );
+      setDraftSizesByVariant((prev) => ({
+        ...prev,
+        [variant.id]: updatedSizes.map((s) => s.id),
+      }));
+
+      setSizeSaveSuccess((prev) => ({ ...prev, [variant.id]: true }));
+      setTimeout(() => {
+        setSizeSaveSuccess((prev) => ({ ...prev, [variant.id]: false }));
+      }, 2000);
+    } catch (err) {
+      // Draft is intentionally left exactly as the admin set it — a failed
+      // save must not revert or discard the in-progress selection.
+      setSizeSaveError((prev) => ({ ...prev, [variant.id]: err.message }));
+    } finally {
+      setSavingVariantId(null);
+    }
+  }
+
+  const activeColors = (productColors || []).filter((c) => c.is_active !== false);
+  const activeSizes = (productSizes || []).filter((s) => s.is_active !== false);
+
+  return (
+    <>
+      <h3 style={styles.availabilityTitle}>Available Colors &amp; Sizes</h3>
+      <p style={styles.availabilityHint}>
+        Choose which product colors support this design. Size restrictions
+        are optional; leaving all sizes unselected means the design is
+        available for every configured size.
+      </p>
+
+      {variantsLoading ? (
+        <p style={{ color: "#999" }}>Loading availability...</p>
+      ) : variantsError ? (
+        <div style={styles.availabilityErrorBox}>
+          <span>{variantsError}</span>
+          <button onClick={loadVariants} style={styles.retryBtn}>
+            Retry
+          </button>
+        </div>
+      ) : activeColors.length === 0 ? (
+        <p style={{ color: "#999" }}>
+          This product has no active colors configured yet. Add colors above
+          before configuring design availability.
+        </p>
+      ) : (
+        <div style={styles.availabilityColorList}>
+          {activeColors.map((color) => {
+            const variant = findVariantForColor(color.id);
+            const isPending = pendingColorId === color.id;
+            const status = !variant
+              ? "not-added"
+              : variant.is_active
+              ? "active"
+              : "inactive";
+
+            return (
+              <div key={color.id} style={styles.availabilityColorRow}>
+                <div style={styles.availabilityColorHeader}>
+                  <span
+                    style={{
+                      ...styles.colorDot,
+                      background: color.color_hex || "#ccc",
+                    }}
+                  />
+                  <strong>{color.color_name}</strong>
+                  <span style={styles.availabilityStatusBadge(status)}>
+                    {status === "active"
+                      ? "Active"
+                      : status === "inactive"
+                      ? "Inactive"
+                      : "Not added"}
+                  </span>
+
+                  <div style={{ marginLeft: "auto" }}>
+                    {status === "not-added" && (
+                      <button
+                        onClick={() => enableColor(color.id)}
+                        disabled={isPending}
+                        style={styles.addBtn}
+                      >
+                        {isPending ? "Adding..." : "Enable"}
+                      </button>
+                    )}
+                    {status === "inactive" && (
+                      <button
+                        onClick={() => setVariantActive(variant, true)}
+                        disabled={isPending}
+                        style={styles.addBtn}
+                      >
+                        {isPending ? "Reactivating..." : "Reactivate"}
+                      </button>
+                    )}
+                    {status === "active" && (
+                      <button
+                        onClick={() => setVariantActive(variant, false)}
+                        disabled={isPending}
+                        style={styles.deleteBtn}
+                      >
+                        {isPending ? "Deactivating..." : "Deactivate"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {colorActionError[color.id] && (
+                  <p style={styles.availabilityErrorText}>
+                    {colorActionError[color.id]}
+                  </p>
+                )}
+
+                {status === "active" && variant && (
+                  <div style={styles.availabilitySizeBlock}>
+                    {activeSizes.length === 0 ? (
+                      <p style={styles.mutedNote}>
+                        This product currently uses a standard/no-size
+                        option. No size restrictions are needed for this
+                        design.
+                      </p>
+                    ) : (
+                      <>
+                        <div style={styles.availabilitySizeRow}>
+                          {activeSizes.map((size) => {
+                            const draft = draftSizesByVariant[variant.id] || [];
+                            const selected = draft.includes(size.id);
+
+                            return (
+                              <button
+                                key={size.id}
+                                onClick={() =>
+                                  toggleDraftSize(variant.id, size.id)
+                                }
+                                style={styles.sizeToggleBtn(selected)}
+                              >
+                                {size.size_label}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        <div style={styles.availabilitySizeFooter}>
+                          <span style={styles.mutedNote}>
+                            {(draftSizesByVariant[variant.id] || []).length === 0
+                              ? "All product sizes"
+                              : `${(draftSizesByVariant[variant.id] || []).length} size(s) selected`}
+                          </span>
+
+                          <button
+                            onClick={() => saveSizes(variant)}
+                            disabled={savingVariantId === variant.id}
+                            style={styles.addBtn}
+                          >
+                            {savingVariantId === variant.id
+                              ? "Saving..."
+                              : "Save Sizes"}
+                          </button>
+
+                          {sizeSaveSuccess[variant.id] && (
+                            <span style={styles.savedIndicator}>Saved</span>
+                          )}
+                        </div>
+
+                        {sizeSaveError[variant.id] && (
+                          <p style={styles.availabilityErrorText}>
+                            {sizeSaveError[variant.id]}
+                          </p>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </>
   );
 }
@@ -1109,5 +1463,135 @@ const styles = {
     padding: "50px",
     textAlign: "center",
     color: "#999",
+  },
+
+  // ---- Design availability (colors & sizes) editor ----
+  manageAvailabilityBtn: (isOpen) => ({
+    marginTop: "6px",
+    width: "100%",
+    padding: "8px 12px",
+    border: "1px solid #111",
+    background: isOpen ? "#111" : "#fff",
+    color: isOpen ? "#fff" : "#111",
+    cursor: "pointer",
+    fontFamily: "Georgia, serif",
+    fontSize: "11px",
+    letterSpacing: "0.05em",
+    textTransform: "uppercase",
+  }),
+  availabilityPanel: {
+    gridColumn: "1 / -1",
+    marginTop: "10px",
+    marginBottom: "8px",
+    paddingTop: "18px",
+    borderTop: "2px solid #111",
+  },
+  availabilityTitle: {
+    fontSize: "16px",
+    fontWeight: 400,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    marginBottom: "6px",
+  },
+  availabilityHint: {
+    color: "#888",
+    fontSize: "13px",
+    lineHeight: 1.6,
+    marginBottom: "16px",
+    maxWidth: "640px",
+  },
+  availabilityErrorBox: {
+    display: "flex",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: "12px",
+    background: "#fff0f0",
+    border: "1px solid #f0b5b5",
+    color: "#b52a2a",
+    padding: "12px 14px",
+  },
+  availabilityColorList: {
+    display: "grid",
+    gap: "10px",
+  },
+  availabilityColorRow: {
+    border: "1px solid #eee",
+    padding: "14px",
+    background: "#fff",
+  },
+  availabilityColorHeader: {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    flexWrap: "wrap",
+  },
+  availabilityStatusBadge: (status) => ({
+    fontSize: "10px",
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    padding: "3px 9px",
+    background:
+      status === "active"
+        ? "#eaf5ea"
+        : status === "inactive"
+        ? "#f5f0e0"
+        : "#f2f0eb",
+    color:
+      status === "active"
+        ? "#2a7a2a"
+        : status === "inactive"
+        ? "#a07a1a"
+        : "#999",
+  }),
+  availabilitySizeBlock: {
+    marginTop: "12px",
+    paddingTop: "12px",
+    borderTop: "1px solid #f0eeea",
+  },
+  availabilitySizeRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "8px",
+    marginBottom: "10px",
+  },
+  sizeToggleBtn: (selected) => ({
+    padding: "8px 12px",
+    border: selected ? "1.5px solid #111" : "1px solid #ddd",
+    background: selected ? "#111" : "#fff",
+    color: selected ? "#fff" : "#111",
+    cursor: "pointer",
+    fontFamily: "Georgia, serif",
+    fontSize: "12px",
+  }),
+  availabilitySizeFooter: {
+    display: "flex",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: "12px",
+  },
+  mutedNote: {
+    color: "#999",
+    fontSize: "12px",
+  },
+  savedIndicator: {
+    color: "#2a7a2a",
+    fontSize: "12px",
+    letterSpacing: "0.05em",
+    textTransform: "uppercase",
+  },
+  availabilityErrorText: {
+    color: "#b52a2a",
+    fontSize: "12px",
+    marginTop: "6px",
+  },
+  retryBtn: {
+    background: "none",
+    border: "none",
+    borderBottom: "1px solid #b52a2a",
+    color: "#b52a2a",
+    cursor: "pointer",
+    fontFamily: "Georgia, serif",
+    fontSize: "12px",
+    padding: 0,
   },
 };
