@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import AdminNav from "../components/AdminNav";
 import API_BASE from "../config/api";
@@ -838,6 +838,7 @@ export default function AdminCustomization() {
                                       <DesignAvailabilityEditor
                                         key={design.id}
                                         authFetch={authFetch}
+                                        token={token}
                                         collectionId={collection.id}
                                         designId={design.id}
                                         productColors={colors}
@@ -869,6 +870,7 @@ export default function AdminCustomization() {
 // (variants, drafts, errors) instead of carrying anything stale over.
 function DesignAvailabilityEditor({
   authFetch,
+  token,
   collectionId,
   designId,
   productColors,
@@ -891,9 +893,20 @@ function DesignAvailabilityEditor({
   const [sizeSaveError, setSizeSaveError] = useState({});
   const [sizeSaveSuccess, setSizeSaveSuccess] = useState({});
 
+  // Which variant's preview-gallery editor is open — only one at a time.
+  // VariantGalleryEditor is mounted with key={variantId}, so switching
+  // between colors' galleries fully resets its internal state.
+  const [expandedGalleryVariantId, setExpandedGalleryVariantId] = useState(null);
+
   useEffect(() => {
     loadVariants();
   }, []);
+
+  function toggleGallery(variantId) {
+    setExpandedGalleryVariantId((current) =>
+      current === variantId ? null : variantId
+    );
+  }
 
   async function loadVariants() {
     try {
@@ -1170,10 +1183,417 @@ function DesignAvailabilityEditor({
                     )}
                   </div>
                 )}
+
+                {variant && status !== "not-added" && (
+                  <div style={styles.galleryToggleRow}>
+                    <button
+                      onClick={() => toggleGallery(variant.id)}
+                      style={styles.manageAvailabilityBtn(
+                        expandedGalleryVariantId === variant.id
+                      )}
+                    >
+                      {expandedGalleryVariantId === variant.id
+                        ? "Hide Preview Gallery"
+                        : "Manage Preview Gallery"}
+                    </button>
+                  </div>
+                )}
+
+                {variant && expandedGalleryVariantId === variant.id && (
+                  <div style={styles.galleryPanel}>
+                    <VariantGalleryEditor
+                      key={variant.id}
+                      authFetch={authFetch}
+                      token={token}
+                      variantId={variant.id}
+                    />
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
+      )}
+    </>
+  );
+}
+
+// Preview-image gallery editor for one design/color compatibility variant.
+// Mounted with key={variantId} by DesignAvailabilityEditor, so switching
+// which color's gallery is open fully resets everything below (images,
+// pending upload files, all pending/error state).
+function VariantGalleryEditor({ authFetch, token, variantId }) {
+  const [images, setImages] = useState([]);
+  const [imagesLoading, setImagesLoading] = useState(true);
+  const [imagesError, setImagesError] = useState("");
+
+  const [selectedFiles, setSelectedFiles] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const fileInputRef = useRef(null);
+
+  const [settingMainId, setSettingMainId] = useState(null);
+  const [mainError, setMainError] = useState({});
+
+  const [togglingImageId, setTogglingImageId] = useState(null);
+  const [toggleError, setToggleError] = useState({});
+
+  const [reordering, setReordering] = useState(false);
+  const [reorderError, setReorderError] = useState("");
+
+  useEffect(() => {
+    loadImages();
+  }, []);
+
+  async function loadImages() {
+    try {
+      setImagesLoading(true);
+      setImagesError("");
+
+      const data = await authFetch(
+        `${API_BASE}/admin/customization/variants/${variantId}/preview-images`
+      );
+      setImages(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setImagesError(err.message);
+    } finally {
+      setImagesLoading(false);
+    }
+  }
+
+  function handleFileChange(e) {
+    setSelectedFiles(Array.from(e.target.files || []));
+    setUploadError("");
+  }
+
+  async function handleUpload() {
+    if (selectedFiles.length === 0) return;
+
+    setUploading(true);
+    setUploadError("");
+
+    try {
+      const formData = new FormData();
+      for (const file of selectedFiles) {
+        formData.append("images", file);
+      }
+
+      // Plain fetch, not authFetch — authFetch always sets
+      // Content-Type: application/json, which breaks multipart uploads
+      // (same reasoning as the existing design-cover upload above).
+      const res = await fetch(
+        `${API_BASE}/admin/customization/variants/${variantId}/preview-images`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: formData,
+        }
+      );
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        throw new Error(data?.error || data?.message || "Upload failed");
+      }
+
+      setSelectedFiles([]);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      await loadImages();
+    } catch (err) {
+      // Selected files are intentionally left in place on failure — both
+      // in state and in the file input — so the admin doesn't have to
+      // re-pick them after fixing whatever caused the error.
+      setUploadError(err.message);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function handleSetMain(imageId) {
+    setSettingMainId(imageId);
+    setMainError((prev) => ({ ...prev, [imageId]: "" }));
+
+    try {
+      await authFetch(
+        `${API_BASE}/admin/customization/preview-images/${imageId}/main`,
+        { method: "PATCH" }
+      );
+      await loadImages();
+    } catch (err) {
+      setMainError((prev) => ({ ...prev, [imageId]: err.message }));
+    } finally {
+      setSettingMainId(null);
+    }
+  }
+
+  async function handleToggleActive(image, nextActive) {
+    if (!nextActive && image.is_main) {
+      const confirmed = confirm(
+        "This is the main preview. Another active image will become main automatically."
+      );
+      if (!confirmed) return;
+    }
+
+    setTogglingImageId(image.id);
+    setToggleError((prev) => ({ ...prev, [image.id]: "" }));
+
+    try {
+      await authFetch(
+        `${API_BASE}/admin/customization/preview-images/${image.id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ is_active: nextActive }),
+        }
+      );
+      // Never assume the previous main is still main — the backend may
+      // have promoted a different image automatically. Reload the full
+      // gallery rather than patching local state by hand.
+      await loadImages();
+    } catch (err) {
+      setToggleError((prev) => ({ ...prev, [image.id]: err.message }));
+    } finally {
+      setTogglingImageId(null);
+    }
+  }
+
+  async function submitReorder(imageIds) {
+    setReordering(true);
+    setReorderError("");
+
+    try {
+      const updated = await authFetch(
+        `${API_BASE}/admin/customization/variants/${variantId}/preview-images/order`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ image_ids: imageIds }),
+        }
+      );
+      setImages(Array.isArray(updated) ? updated : []);
+    } catch (err) {
+      setReorderError(err.message);
+    } finally {
+      setReordering(false);
+    }
+  }
+
+  // Moves a non-main image earlier/later among the other non-main images.
+  // The main image always stays pinned first — the reorder endpoint is a
+  // strict full-gallery reorder, so every id (active AND inactive) from
+  // the complete local `images` array is always included, never a subset.
+  function moveNonMainImage(imageId, direction) {
+    const mainId = images.find((img) => img.is_main)?.id ?? null;
+    const nonMain = images.filter((img) => img.id !== mainId);
+
+    const idx = nonMain.findIndex((img) => img.id === imageId);
+    if (idx === -1) return;
+
+    const targetIdx = idx + direction;
+    if (targetIdx < 0 || targetIdx >= nonMain.length) return;
+
+    const reordered = [...nonMain];
+    [reordered[idx], reordered[targetIdx]] = [reordered[targetIdx], reordered[idx]];
+
+    const fullOrderedIds =
+      mainId != null
+        ? [mainId, ...reordered.map((img) => img.id)]
+        : reordered.map((img) => img.id);
+
+    submitReorder(fullOrderedIds);
+  }
+
+  const activeCount = images.filter((img) => img.is_active).length;
+  const inactiveCount = images.length - activeCount;
+  const statusText =
+    images.length === 0
+      ? "No preview images"
+      : inactiveCount === 0
+      ? `${activeCount} active image${activeCount === 1 ? "" : "s"}`
+      : `${activeCount} active · ${inactiveCount} inactive`;
+  const readinessText =
+    activeCount > 0
+      ? "Preview gallery prepared"
+      : "This design/color is not ready for customers yet.";
+
+  const mainId = images.find((img) => img.is_main)?.id ?? null;
+  const nonMainIds = images.filter((img) => img.id !== mainId).map((img) => img.id);
+  const reorderDisabled = imagesLoading || reordering;
+
+  return (
+    <>
+      <h4 style={styles.galleryTitle}>Preview Gallery</h4>
+      <p style={styles.availabilityHint}>
+        Upload real photos of this exact design on this exact color. The
+        main image is always shown first to customers.
+      </p>
+
+      {imagesLoading ? (
+        <p style={{ color: "#999" }}>Loading gallery...</p>
+      ) : imagesError ? (
+        <div style={styles.availabilityErrorBox}>
+          <span>{imagesError}</span>
+          <button onClick={loadImages} style={styles.retryBtn}>
+            Retry
+          </button>
+        </div>
+      ) : (
+        <>
+          <div style={styles.galleryStatusRow}>
+            <span style={styles.mutedNote}>{statusText}</span>
+            <span
+              style={
+                activeCount > 0 ? styles.savedIndicator : styles.galleryNotReadyText
+              }
+            >
+              {readinessText}
+            </span>
+          </div>
+
+          {images.length === 0 ? (
+            <p style={{ color: "#999" }}>No images uploaded yet.</p>
+          ) : (
+            <div style={styles.galleryList}>
+              {images.map((image, index) => {
+                const isMain = image.id === mainId;
+                const nonMainIdx = nonMainIds.indexOf(image.id);
+                const canMoveUp = !isMain && nonMainIdx > 0;
+                const canMoveDown =
+                  !isMain &&
+                  nonMainIdx !== -1 &&
+                  nonMainIdx < nonMainIds.length - 1;
+                const isBusy =
+                  reordering ||
+                  settingMainId === image.id ||
+                  togglingImageId === image.id;
+
+                return (
+                  <div key={image.id} style={styles.galleryRow}>
+                    <img src={image.image_url} alt="" style={styles.galleryThumb} />
+
+                    <div style={styles.galleryRowInfo}>
+                      <div style={styles.galleryBadgeRow}>
+                        {isMain && <span style={styles.mainBadge}>Main</span>}
+                        <span
+                          style={styles.availabilityStatusBadge(
+                            image.is_active ? "active" : "inactive"
+                          )}
+                        >
+                          {image.is_active ? "Active" : "Inactive"}
+                        </span>
+                        <span style={styles.mutedNote}>
+                          Position {index + 1} of {images.length}
+                        </span>
+                      </div>
+
+                      <div style={styles.galleryActionsRow}>
+                        {image.is_active && !isMain && (
+                          <button
+                            onClick={() => handleSetMain(image.id)}
+                            disabled={isBusy}
+                            style={styles.addBtn}
+                          >
+                            {settingMainId === image.id ? "Setting..." : "Set Main"}
+                          </button>
+                        )}
+                        {!image.is_active && (
+                          <span style={styles.mutedNote}>
+                            Reactivate to set as main
+                          </span>
+                        )}
+
+                        {image.is_active ? (
+                          <button
+                            onClick={() => handleToggleActive(image, false)}
+                            disabled={isBusy}
+                            style={styles.deleteBtn}
+                          >
+                            {togglingImageId === image.id
+                              ? "Deactivating..."
+                              : "Deactivate"}
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleToggleActive(image, true)}
+                            disabled={isBusy}
+                            style={styles.addBtn}
+                          >
+                            {togglingImageId === image.id
+                              ? "Reactivating..."
+                              : "Reactivate"}
+                          </button>
+                        )}
+
+                        {!isMain && (
+                          <>
+                            <button
+                              onClick={() => moveNonMainImage(image.id, -1)}
+                              disabled={reorderDisabled || !canMoveUp}
+                              style={styles.moveBtn}
+                              aria-label="Move up"
+                            >
+                              ▲
+                            </button>
+                            <button
+                              onClick={() => moveNonMainImage(image.id, 1)}
+                              disabled={reorderDisabled || !canMoveDown}
+                              style={styles.moveBtn}
+                              aria-label="Move down"
+                            >
+                              ▼
+                            </button>
+                          </>
+                        )}
+                      </div>
+
+                      {mainError[image.id] && (
+                        <p style={styles.availabilityErrorText}>
+                          {mainError[image.id]}
+                        </p>
+                      )}
+                      {toggleError[image.id] && (
+                        <p style={styles.availabilityErrorText}>
+                          {toggleError[image.id]}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {reorderError && (
+            <p style={styles.availabilityErrorText}>{reorderError}</p>
+          )}
+        </>
+      )}
+
+      <div style={styles.galleryUploadRow}>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          multiple
+          onChange={handleFileChange}
+        />
+        {selectedFiles.length > 0 && (
+          <span style={styles.mutedNote}>
+            {selectedFiles.length} file{selectedFiles.length === 1 ? "" : "s"}{" "}
+            selected
+          </span>
+        )}
+        <button
+          onClick={handleUpload}
+          disabled={uploading || selectedFiles.length === 0}
+          style={styles.addBtn}
+        >
+          {uploading ? "Uploading..." : "Upload Images"}
+        </button>
+      </div>
+
+      {uploadError && (
+        <p style={styles.availabilityErrorText}>{uploadError}</p>
       )}
     </>
   );
@@ -1593,5 +2013,103 @@ const styles = {
     fontFamily: "Georgia, serif",
     fontSize: "12px",
     padding: 0,
+  },
+
+  // ---- Preview gallery editor (Task F2) ----
+  galleryToggleRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
+    flexWrap: "wrap",
+    marginTop: "12px",
+    paddingTop: "12px",
+    borderTop: "1px solid #f0eeea",
+  },
+  galleryPanel: {
+    marginTop: "12px",
+    paddingTop: "12px",
+    borderTop: "1px dashed #ddd",
+  },
+  galleryTitle: {
+    fontSize: "13px",
+    fontWeight: 400,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    marginBottom: "4px",
+    color: "#9b8c73",
+  },
+  galleryStatusRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "14px",
+    flexWrap: "wrap",
+    marginBottom: "12px",
+  },
+  galleryNotReadyText: {
+    color: "#b07d2a",
+    fontSize: "12px",
+    letterSpacing: "0.03em",
+  },
+  galleryList: {
+    display: "grid",
+    gap: "10px",
+    marginBottom: "16px",
+  },
+  galleryRow: {
+    display: "flex",
+    gap: "12px",
+    border: "1px solid #eee",
+    padding: "10px",
+    background: "#fafafa",
+    flexWrap: "wrap",
+  },
+  galleryThumb: {
+    width: "64px",
+    height: "80px",
+    objectFit: "cover",
+    flexShrink: 0,
+    background: "#f2f0eb",
+  },
+  galleryRowInfo: {
+    flex: 1,
+    minWidth: "200px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "8px",
+  },
+  galleryBadgeRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    flexWrap: "wrap",
+  },
+  mainBadge: {
+    fontSize: "10px",
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    padding: "3px 9px",
+    background: "#111",
+    color: "#fff",
+  },
+  galleryActionsRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    flexWrap: "wrap",
+  },
+  moveBtn: {
+    width: "32px",
+    height: "32px",
+    border: "1px solid #ddd",
+    background: "#fff",
+    cursor: "pointer",
+    fontFamily: "Georgia, serif",
+  },
+  galleryUploadRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
+    flexWrap: "wrap",
+    marginTop: "8px",
   },
 };
