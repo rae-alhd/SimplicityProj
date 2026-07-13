@@ -1,4 +1,4 @@
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 const cardStyle = {
   display: "flex",
@@ -90,6 +90,16 @@ const outOfStockBadgeStyle = {
   padding: "4px 8px",
   fontFamily: "'Cormorant Garamond', Georgia, serif",
   zIndex: 1,
+  // Sits visually above the image but must never intercept the click —
+  // the image area underneath stays fully clickable through it.
+  pointerEvents: "none",
+};
+
+const imageLinkStyle = {
+  display: "block",
+  width: "100%",
+  height: "100%",
+  cursor: "pointer",
 };
 
 const btnStyle = {
@@ -136,25 +146,35 @@ export default function ProductCard({ product }) {
         {isOutOfStock && (
           <span style={outOfStockBadgeStyle}>Out of Stock</span>
         )}
-        {displayImageUrl ? (
-          <img
-            src={displayImageUrl}
-            alt={product.name}
-            style={imgStyle}
-            onError={(e) => {
-              e.currentTarget.style.display = "none";
-              e.currentTarget.nextSibling.style.display = "flex";
-            }}
-          />
-        ) : null}
-        <div
-          style={{
-            ...placeholderStyle,
-            display: displayImageUrl ? "none" : "flex",
-          }}
+        {/* Same destination as the View Details button below — clicking
+            the image opens the product page. Img + placeholder stay
+            siblings inside the Link so the existing onError swap still
+            works exactly as before. */}
+        <Link
+          to={`/products/${product.id}`}
+          style={imageLinkStyle}
+          aria-label={`View details for ${product.name}`}
         >
-          No Image
-        </div>
+          {displayImageUrl ? (
+            <img
+              src={displayImageUrl}
+              alt={product.name}
+              style={imgStyle}
+              onError={(e) => {
+                e.currentTarget.style.display = "none";
+                e.currentTarget.nextSibling.style.display = "flex";
+              }}
+            />
+          ) : null}
+          <div
+            style={{
+              ...placeholderStyle,
+              display: displayImageUrl ? "none" : "flex",
+            }}
+          >
+            No Image
+          </div>
+        </Link>
       </div>
 
       <div style={infoStyle}>
