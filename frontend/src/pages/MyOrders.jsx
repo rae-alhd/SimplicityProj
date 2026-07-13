@@ -6,6 +6,7 @@ import {
   getStatusBadgeStyle,
   statusLabel,
 } from "../utils/orderStatus";
+import { paymentMethodLabel, paymentStatusLabel } from "../utils/paymentStatus";
 
 function StatusBadge({ status }) {
   const cfg = getStatusBadgeStyle(status);
@@ -105,6 +106,59 @@ function GiftBadge() {
   return <span style={s.giftBadge}>🎁 Gift order</span>;
 }
 
+/* ─────────────────────────────────────────────
+   Task N1: customer-safe payment section. Only ever reads the safe fields
+   GET /orders/my already provides (payment_status, payment_method,
+   safe_transaction_reference, paid_at, refunded_at) — never a private
+   reason or admin note, since those were never sent to the customer at all.
+───────────────────────────────────────────── */
+function PaymentInfo({ order }) {
+  const status = order.payment_status;
+  if (!status) return null;
+
+  const relevantDate = status === "REFUNDED" ? order.refunded_at : order.paid_at;
+  const relevantDateLabel = status === "REFUNDED" ? "Refunded" : "Paid";
+
+  return (
+    <div style={s.paymentInfoBox}>
+      <div style={s.paymentInfoGrid}>
+        <div style={s.paymentInfoRow}>
+          <span style={s.summaryLabel}>Payment</span>
+          <span style={s.paymentInfoValue}>{paymentStatusLabel(status)}</span>
+        </div>
+        <div style={s.paymentInfoRow}>
+          <span style={s.summaryLabel}>Method</span>
+          <span style={s.paymentInfoValue}>{paymentMethodLabel(order.payment_method)}</span>
+        </div>
+        {order.safe_transaction_reference && (
+          <div style={s.paymentInfoRow}>
+            <span style={s.summaryLabel}>Reference</span>
+            <span style={s.paymentInfoValue}>{order.safe_transaction_reference}</span>
+          </div>
+        )}
+        {relevantDate && (
+          <div style={s.paymentInfoRow}>
+            <span style={s.summaryLabel}>{relevantDateLabel}</span>
+            <span style={s.paymentInfoValue}>{formatStageDate(relevantDate)}</span>
+          </div>
+        )}
+      </div>
+
+      {status === "PENDING" && (
+        <p style={s.paymentStatusNote}>Payment confirmation is pending.</p>
+      )}
+      {status === "FAILED" && (
+        <p style={{ ...s.paymentStatusNote, color: "#b52a2a" }}>
+          The payment was not completed. Please contact Simplicity for assistance.
+        </p>
+      )}
+      {status === "REFUNDED" && (
+        <p style={s.paymentStatusNote}>This payment was refunded.</p>
+      )}
+    </div>
+  );
+}
+
 function OrderCard({ order }) {
   const [expanded, setExpanded] = useState(false);
   const items = Array.isArray(order.items) ? order.items : [];
@@ -162,6 +216,9 @@ function OrderCard({ order }) {
 
       {/* ── Progress Timeline ── */}
       <OrderProgress order={order} />
+
+      {/* ── Payment ── */}
+      <PaymentInfo order={order} />
 
       {/* ── Items Accordion ── */}
       {items.length > 0 && (
@@ -538,6 +595,37 @@ const s = {
   notesText: {
     fontSize: "0.8rem", color: "#999",
     fontStyle: "italic", fontFamily: "sans-serif", lineHeight: "1.5",
+  },
+
+  // Payment info (Task N1)
+  paymentInfoBox: {
+    marginTop: "6px",
+    marginBottom: "6px",
+    paddingTop: "16px",
+    borderTop: "1px solid #f0ece6",
+  },
+  paymentInfoGrid: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "20px",
+  },
+  paymentInfoRow: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "4px",
+  },
+  paymentInfoValue: {
+    fontSize: "0.85rem",
+    color: "#1a1a1a",
+    letterSpacing: "0.02em",
+  },
+  paymentStatusNote: {
+    marginTop: "10px",
+    fontSize: "0.8rem",
+    color: "#888",
+    fontFamily: "sans-serif",
+    fontStyle: "italic",
+    lineHeight: "1.5",
   },
 
   // Progress timeline (Task M1)

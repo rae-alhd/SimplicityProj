@@ -12,6 +12,13 @@ const {
   VALID_STATUSES,
   validateTransition,
 } = require("../utils/orderStatus");
+const {
+  PAYMENT_STATUS_LABELS,
+  VALID_PAYMENT_STATUSES,
+  PAYMENT_METHOD_LABELS,
+  VALID_PAYMENT_METHODS,
+  validatePaymentTransition,
+} = require("../utils/paymentStatus");
 
 /* ─────────────────────────────────────────────
    HELPER: admin-only guard
@@ -306,7 +313,7 @@ async function attachOrderItemDesignFields(items) {
 ───────────────────────────────────────────── */
 router.post("/", authMiddleware, async (req, res) => {
   const userId = req.user.id;
-  const { customer_name, phone, address, notes, is_gift } = req.body;
+  const { customer_name, phone, address, notes, is_gift, payment_method } = req.body;
 
   if (!customer_name || !address) {
     return res
@@ -322,6 +329,19 @@ router.post("/", authMiddleware, async (req, res) => {
     return res.status(400).json({ error: "is_gift must be a boolean." });
   }
   const isGift = is_gift === true;
+
+  // Task N1 correction: Checkout.jsx has no real payment-method selector —
+  // accepting an explicit payment_method here would let a manipulated
+  // browser request claim a method the customer never actually chose.
+  // Every checkout payment is unconditionally PENDING/MANUAL until a real
+  // selector exists; the owner can still set CASH_ON_DELIVERY/BANK_TRANSFER
+  // afterward via PATCH /orders/:id/payment. Rejected before the
+  // transaction opens, so nothing (order/payment/stock/cart) is touched.
+  if (payment_method !== undefined) {
+    return res.status(400).json({
+      error: "Payment method selection is not available at checkout.",
+    });
+  }
 
   const client = await pool.connect();
 
@@ -606,6 +626,18 @@ const cartResult = await client.query(
 
     const order = orderResult.rows[0];
 
+    // 3.5 Task N1: create this order's payment record inside the same
+    // transaction. No real gateway or checkout selector exists — every new
+    // order unconditionally starts PENDING/MANUAL (payment_method is
+    // rejected above if the request tried to supply one at all). If this
+    // insert throws for any reason, the catch block below rolls back
+    // everything already done above — no order, no order_items, no stock
+    // deduction, no cart clearing.
+    await client.query(
+      `INSERT INTO payments (order_id, status, payment_method) VALUES ($1, 'PENDING', 'MANUAL')`,
+      [order.id]
+    );
+
    // 4. Copy cart items into order_items (snapshot name + price + customization
    // details). Design-linked rows additionally carry the fresh snapshot
    // computed during revalidation above — never the raw Cart/client values.
@@ -749,6 +781,33 @@ function buildCustomerTimeline(order, historyRows) {
 }
 
 /* ─────────────────────────────────────────────
+   Task N1: customer-safe payment timeline, mirroring buildCustomerTimeline
+   above — an implicit initial "Pending Payment" entry at the payment's own
+   created_at (no history row exists for that initial state, same reasoning
+   as order status), followed by real payment_status_history transitions.
+   Exposes only status/label/timestamp — no changed_by, no change_note.
+───────────────────────────────────────────── */
+function buildCustomerPaymentTimeline(paymentCreatedAt, historyRows) {
+  const timeline = [
+    {
+      status: "PENDING",
+      status_label: PAYMENT_STATUS_LABELS.PENDING,
+      timestamp: paymentCreatedAt,
+    },
+  ];
+
+  for (const entry of historyRows) {
+    timeline.push({
+      status: entry.new_status,
+      status_label: PAYMENT_STATUS_LABELS[entry.new_status] || entry.new_status,
+      timestamp: entry.created_at,
+    });
+  }
+
+  return timeline;
+}
+
+/* ─────────────────────────────────────────────
    GET /api/orders/my
    Logged-in user's own orders with their items.
 ───────────────────────────────────────────── */
@@ -756,9 +815,25 @@ router.get("/my", authMiddleware, async (req, res) => {
   const userId = req.user.id;
 
   try {
-    // Fetch orders
+    // Fetch orders, LEFT JOINed to their one payment record (Task N1).
+    // LEFT JOIN is defensive — every order should have exactly one payment
+    // row post-migration, but this never 500s if one were ever missing.
     const ordersResult = await pool.query(
-      `SELECT * FROM orders WHERE user_id = $1 ORDER BY created_at DESC`,
+      `
+      SELECT
+        o.*,
+        pay.id AS payment_id,
+        pay.status AS payment_status,
+        pay.payment_method AS payment_method,
+        pay.transaction_reference AS transaction_reference,
+        pay.paid_at AS paid_at,
+        pay.refunded_at AS refunded_at,
+        pay.created_at AS payment_created_at
+      FROM orders o
+      LEFT JOIN payments pay ON pay.order_id = o.id
+      WHERE o.user_id = $1
+      ORDER BY o.created_at DESC
+      `,
       [userId]
     );
 
@@ -799,15 +874,63 @@ router.get("/my", authMiddleware, async (req, res) => {
       historyByOrder[entry.order_id].push(entry);
     }
 
+    // Task N1: customer-safe payment history, keyed by order_id (payment_id
+    // isn't exposed to customers, so there's no need to key by it instead).
+    const paymentIds = orders.map((o) => o.payment_id).filter(Boolean);
+    const paymentHistoryResult = paymentIds.length
+      ? await pool.query(
+          `SELECT order_id, new_status, created_at
+           FROM payment_status_history WHERE payment_id = ANY($1::int[]) ORDER BY created_at ASC`,
+          [paymentIds]
+        )
+      : { rows: [] };
+
+    const paymentHistoryByOrder = {};
+    for (const entry of paymentHistoryResult.rows) {
+      if (!paymentHistoryByOrder[entry.order_id]) paymentHistoryByOrder[entry.order_id] = [];
+      paymentHistoryByOrder[entry.order_id].push(entry);
+    }
+
     // Attach items to each order. admin_notes (the legacy single-field
     // internal note column) is explicitly stripped here — customers must
     // never receive it, and `SELECT *` above would otherwise include it.
+    // Same for payment_id/payment_created_at — internal-only, not part of
+    // the customer-safe payment contract.
     const ordersWithItems = orders.map((order) => {
-      const { admin_notes, ...safeOrder } = order;
+      const {
+        admin_notes,
+        payment_id,
+        payment_created_at,
+        payment_status,
+        payment_method,
+        transaction_reference,
+        paid_at,
+        refunded_at,
+        ...safeOrder
+      } = order;
+
+      // Safe reference is only ever shown once money has actually moved —
+      // never while still Pending or after a Failed attempt.
+      const safeTransactionReference =
+        payment_status === "PAID" || payment_status === "REFUNDED"
+          ? transaction_reference || null
+          : null;
+
       return {
         ...safeOrder,
         status_display_label: STATUS_LABELS[order.status] || order.status,
         status_timeline: buildCustomerTimeline(order, historyByOrder[order.id] || []),
+        payment_status,
+        payment_status_display_label: PAYMENT_STATUS_LABELS[payment_status] || payment_status,
+        payment_method,
+        payment_method_display_label: PAYMENT_METHOD_LABELS[payment_method] || payment_method,
+        safe_transaction_reference: safeTransactionReference,
+        paid_at,
+        refunded_at,
+        payment_timeline: buildCustomerPaymentTimeline(
+          payment_created_at,
+          paymentHistoryByOrder[order.id] || []
+        ),
         items: itemsByOrder[order.id] || [],
       };
     });
@@ -829,11 +952,19 @@ router.get("/my", authMiddleware, async (req, res) => {
      ?customized=true|false  (at least one order_item.is_customized)
      ?date_from=2026-01-01   (created_at >=, inclusive)
      ?date_to=2026-01-31     (created_at <, i.e. through end of that day)
+   Task N1 adds:
+     ?payment_status=PAID
+     ?payment_method=BANK_TRANSFER
+     ?refund_required=true|false   (order.status='cancelled' AND payment.status='PAID')
    Response shape is unchanged/additive: every existing field stays, plus
-   status_display_label, contains_customized_items, item_count per order.
+   status_display_label, contains_customized_items, item_count, and the full
+   payment fields/history per order.
 ───────────────────────────────────────────── */
 router.get("/", authMiddleware, adminOnly, async (req, res) => {
-  const { status, search, gift, customized, date_from, date_to } = req.query;
+  const {
+    status, search, gift, customized, date_from, date_to,
+    payment_status, payment_method, refund_required,
+  } = req.query;
 
   try {
     const conditions = [];
@@ -885,12 +1016,52 @@ router.get("/", authMiddleware, adminOnly, async (req, res) => {
       conditions.push(`o.created_at < ($${params.length}::date + INTERVAL '1 day')`);
     }
 
+    if (payment_status) {
+      if (!VALID_PAYMENT_STATUSES.includes(payment_status)) {
+        return res.status(400).json({
+          error: `payment_status must be one of: ${VALID_PAYMENT_STATUSES.join(", ")}`,
+        });
+      }
+      params.push(payment_status);
+      conditions.push(`pay.status = $${params.length}`);
+    }
+
+    if (payment_method) {
+      if (!VALID_PAYMENT_METHODS.includes(payment_method)) {
+        return res.status(400).json({
+          error: `payment_method must be one of: ${VALID_PAYMENT_METHODS.join(", ")}`,
+        });
+      }
+      params.push(payment_method);
+      conditions.push(`pay.payment_method = $${params.length}`);
+    }
+
+    if (refund_required === "true") {
+      conditions.push(`(o.status = 'cancelled' AND pay.status = 'PAID')`);
+    } else if (refund_required === "false") {
+      conditions.push(`NOT (o.status = 'cancelled' AND pay.status = 'PAID')`);
+    }
+
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
     const ordersResult = await pool.query(
-      `SELECT o.*, u.email AS user_email
+      `SELECT
+         o.*,
+         u.email AS user_email,
+         pay.id AS payment_id,
+         pay.status AS payment_status,
+         pay.payment_method AS payment_method,
+         pay.transaction_reference AS transaction_reference,
+         pay.paid_at AS paid_at,
+         pay.failed_at AS failed_at,
+         pay.refunded_at AS refunded_at,
+         pay.failure_reason AS failure_reason,
+         pay.refund_reason AS refund_reason,
+         pay.created_at AS payment_created_at,
+         pay.updated_at AS payment_updated_at
        FROM orders o
        JOIN users u ON u.id = o.user_id
+       LEFT JOIN payments pay ON pay.order_id = o.id
        ${whereClause}
        ORDER BY o.created_at DESC`,
       params
@@ -934,15 +1105,42 @@ router.get("/", authMiddleware, adminOnly, async (req, res) => {
       historyByOrder[entry.order_id].push(entry);
     }
 
+    // Task N1: complete payment history (private change_note + author
+    // included — admin-only route, safe to expose in full).
+    const paymentIds = orders.map((o) => o.payment_id).filter(Boolean);
+    const paymentHistoryResult = paymentIds.length
+      ? await pool.query(
+          `SELECT h.*, u.email AS changed_by_email
+           FROM payment_status_history h
+           LEFT JOIN users u ON u.id = h.changed_by
+           WHERE h.order_id = ANY($1::int[]) ORDER BY h.created_at ASC`,
+          [orderIds]
+        )
+      : { rows: [] };
+
+    const paymentHistoryByOrder = {};
+    for (const entry of paymentHistoryResult.rows) {
+      if (!paymentHistoryByOrder[entry.order_id]) paymentHistoryByOrder[entry.order_id] = [];
+      paymentHistoryByOrder[entry.order_id].push(entry);
+    }
+
     const ordersWithItems = orders.map((order) => {
       const items = itemsByOrder[order.id] || [];
+      const { payment_created_at, payment_updated_at, ...orderFields } = order;
+
       return {
-        ...order,
+        ...orderFields,
         status_display_label: STATUS_LABELS[order.status] || order.status,
         contains_customized_items: items.some((item) => item.is_customized),
         item_count: items.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
         items,
         status_history: historyByOrder[order.id] || [],
+        payment_status_display_label: PAYMENT_STATUS_LABELS[order.payment_status] || order.payment_status,
+        payment_method_display_label: PAYMENT_METHOD_LABELS[order.payment_method] || order.payment_method,
+        // Task N1: a cancelled order whose payment is still PAID needs a
+        // manual refund — this is never auto-set to REFUNDED, only surfaced.
+        refund_required: order.status === "cancelled" && order.payment_status === "PAID",
+        payment_history: paymentHistoryByOrder[order.id] || [],
       };
     });
 
@@ -950,6 +1148,245 @@ router.get("/", authMiddleware, adminOnly, async (req, res) => {
   } catch (err) {
     console.error("Admin fetch orders error:", err);
     res.status(500).json({ error: "Failed to fetch orders." });
+  }
+});
+
+/* ─────────────────────────────────────────────
+   Task N1: owner payment endpoints. Kept in orders.routes.js rather than a
+   separate payments.routes.js — mirrors Task M1's admin-notes endpoints,
+   which are order-scoped resources living alongside the order routes that
+   already mount at /api/orders.
+───────────────────────────────────────────── */
+const MAX_TRANSACTION_REFERENCE_LENGTH = 200;
+const MAX_PAYMENT_CHANGE_NOTE_LENGTH = 2000;
+
+function serializePayment(row) {
+  return {
+    id: row.id,
+    order_id: row.order_id,
+    status: row.status,
+    status_display_label: PAYMENT_STATUS_LABELS[row.status] || row.status,
+    payment_method: row.payment_method,
+    payment_method_display_label: PAYMENT_METHOD_LABELS[row.payment_method] || row.payment_method,
+    transaction_reference: row.transaction_reference,
+    paid_at: row.paid_at,
+    failed_at: row.failed_at,
+    refunded_at: row.refunded_at,
+    failure_reason: row.failure_reason,
+    refund_reason: row.refund_reason,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+// GET /api/orders/:orderId/payment — admin only. Full record + history +
+// refund_required, for a focused refresh after a mutation.
+router.get("/:orderId/payment", authMiddleware, adminOnly, async (req, res) => {
+  const orderId = parseInt(req.params.orderId);
+
+  try {
+    const orderResult = await pool.query("SELECT id, status FROM orders WHERE id = $1", [orderId]);
+    if (orderResult.rows.length === 0) {
+      return res.status(404).json({ error: "Order not found." });
+    }
+
+    const paymentResult = await pool.query("SELECT * FROM payments WHERE order_id = $1", [orderId]);
+    if (paymentResult.rows.length === 0) {
+      return res.status(404).json({ error: "Payment record not found for this order." });
+    }
+    const payment = paymentResult.rows[0];
+
+    const historyResult = await pool.query(
+      `SELECT h.*, u.email AS changed_by_email
+       FROM payment_status_history h
+       LEFT JOIN users u ON u.id = h.changed_by
+       WHERE h.order_id = $1 ORDER BY h.created_at ASC`,
+      [orderId]
+    );
+
+    res.json({
+      payment: serializePayment(payment),
+      refund_required: orderResult.rows[0].status === "cancelled" && payment.status === "PAID",
+      payment_history: historyResult.rows,
+    });
+  } catch (err) {
+    console.error("Fetch payment error:", err);
+    res.status(500).json({ error: "Failed to fetch payment." });
+  }
+});
+
+// PATCH /api/orders/:orderId/payment — admin only. Body:
+//   { status, payment_method?, transaction_reference?, change_note?, failure_reason?, refund_reason? }
+// Enforces the PENDING/FAILED/PAID/REFUNDED transition graph, sets
+// server-generated timestamps, and writes exactly one payment_status_history
+// row per real transition (idempotent same-status re-selects write nothing).
+router.patch("/:orderId/payment", authMiddleware, adminOnly, async (req, res) => {
+  const orderId = parseInt(req.params.orderId);
+  const {
+    status,
+    payment_method,
+    transaction_reference,
+    change_note,
+    failure_reason,
+    refund_reason,
+  } = req.body;
+
+  if (!status || !VALID_PAYMENT_STATUSES.includes(status)) {
+    return res.status(400).json({
+      error: `status must be one of: ${VALID_PAYMENT_STATUSES.join(", ")}`,
+    });
+  }
+
+  if (payment_method !== undefined && !VALID_PAYMENT_METHODS.includes(payment_method)) {
+    return res.status(400).json({
+      error: `payment_method must be one of: ${VALID_PAYMENT_METHODS.join(", ")}`,
+    });
+  }
+
+  const trimmedRef =
+    typeof transaction_reference === "string" ? transaction_reference.trim() : undefined;
+  if (trimmedRef !== undefined && trimmedRef.length > MAX_TRANSACTION_REFERENCE_LENGTH) {
+    return res.status(400).json({
+      error: `transaction_reference must be ${MAX_TRANSACTION_REFERENCE_LENGTH} characters or fewer.`,
+    });
+  }
+
+  const trimmedNote = typeof change_note === "string" ? change_note.trim() : "";
+  if (trimmedNote.length > MAX_PAYMENT_CHANGE_NOTE_LENGTH) {
+    return res.status(400).json({
+      error: `change_note must be ${MAX_PAYMENT_CHANGE_NOTE_LENGTH} characters or fewer.`,
+    });
+  }
+
+  const trimmedFailureReason = typeof failure_reason === "string" ? failure_reason.trim() : "";
+  const trimmedRefundReason = typeof refund_reason === "string" ? refund_reason.trim() : "";
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const orderCheck = await client.query("SELECT id FROM orders WHERE id = $1", [orderId]);
+    if (orderCheck.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Order not found." });
+    }
+
+    // Lock the payment row so a concurrent update can't race this one.
+    const paymentResult = await client.query(
+      "SELECT * FROM payments WHERE order_id = $1 FOR UPDATE",
+      [orderId]
+    );
+    if (paymentResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Payment record not found for this order." });
+    }
+    const currentPayment = paymentResult.rows[0];
+
+    const transition = validatePaymentTransition(currentPayment.status, status);
+    if (!transition.ok) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: transition.error });
+    }
+
+    if (transition.idempotent) {
+      await client.query("ROLLBACK");
+      return res.json({
+        message: "Payment status unchanged.",
+        payment: serializePayment(currentPayment),
+      });
+    }
+
+    // Field requirements only apply to a genuine transition — an idempotent
+    // re-select above never reaches here.
+    if (status === "FAILED" && !trimmedFailureReason) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        error: "failure_reason is required when marking a payment as Failed.",
+      });
+    }
+
+    if (status === "REFUNDED" && !trimmedRefundReason) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        error: "refund_reason is required when refunding a payment.",
+      });
+    }
+
+    const effectiveMethod = payment_method || currentPayment.payment_method;
+    const effectiveReference =
+      trimmedRef !== undefined ? trimmedRef : currentPayment.transaction_reference || "";
+
+    // Bank Transfer payments must carry a reference by the time they're
+    // marked Paid — Cash on Delivery / Manual never require one.
+    if (status === "PAID" && effectiveMethod === "BANK_TRANSFER" && !effectiveReference) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        error: "transaction_reference is required for Bank Transfer payments marked as Paid.",
+      });
+    }
+
+    const updates = ["status = $1", "updated_at = now()"];
+    const values = [status];
+    let idx = 2;
+
+    if (payment_method !== undefined) {
+      updates.push(`payment_method = $${idx++}`);
+      values.push(payment_method);
+    }
+    if (trimmedRef !== undefined) {
+      updates.push(`transaction_reference = $${idx++}`);
+      values.push(trimmedRef || null);
+    }
+
+    if (status === "PAID") {
+      // Never overwrite an already-recorded first payment time.
+      updates.push(`paid_at = COALESCE(paid_at, now())`);
+    }
+
+    if (status === "FAILED") {
+      updates.push(`failed_at = now()`);
+      updates.push(`failure_reason = $${idx++}`);
+      values.push(trimmedFailureReason);
+    }
+
+    if (status === "REFUNDED") {
+      updates.push(`refunded_at = now()`);
+      updates.push(`refund_reason = $${idx++}`);
+      values.push(trimmedRefundReason);
+    }
+
+    // Task N1 chosen behavior for Failed -> Pending (retry): CLEAR the
+    // previous failure's footprint rather than preserving it. failed_at and
+    // failure_reason represent the *current* unresolved failure; once the
+    // owner retries, that failure is no longer active — the full record
+    // still exists permanently in payment_status_history either way.
+    if (status === "PENDING" && currentPayment.status === "FAILED") {
+      updates.push(`failed_at = NULL`);
+      updates.push(`failure_reason = NULL`);
+    }
+
+    values.push(orderId);
+    const updateResult = await client.query(
+      `UPDATE payments SET ${updates.join(", ")} WHERE order_id = $${idx} RETURNING *`,
+      values
+    );
+
+    await client.query(
+      `INSERT INTO payment_status_history (payment_id, order_id, old_status, new_status, changed_by, change_note)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [currentPayment.id, orderId, currentPayment.status, status, req.user.id, trimmedNote || null]
+    );
+
+    await client.query("COMMIT");
+
+    res.json({ message: "Payment updated.", payment: serializePayment(updateResult.rows[0]) });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("Update payment error:", err);
+    res.status(500).json({ error: "Failed to update payment." });
+  } finally {
+    client.release();
   }
 });
 

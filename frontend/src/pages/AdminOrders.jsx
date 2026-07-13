@@ -8,6 +8,14 @@ import {
   getStatusBadgeStyle,
   statusLabel,
 } from "../utils/orderStatus";
+import {
+  ALL_PAYMENT_METHODS,
+  ALL_PAYMENT_STATUSES,
+  getPaymentStatusActions,
+  getPaymentStatusBadgeStyle,
+  paymentMethodLabel,
+  paymentStatusLabel,
+} from "../utils/paymentStatus";
 
 // Matches order id (plain or "#123" style), customer name/email/phone, and
 // any item's product name — all case-insensitive substring matches.
@@ -54,6 +62,23 @@ function StatusBadge({ status }) {
     >
       <span style={{ ...s.statusDot, background: cfg.dot }} />
       {statusLabel(status)}
+    </span>
+  );
+}
+
+function PaymentStatusBadge({ status }) {
+  const cfg = getPaymentStatusBadgeStyle(status);
+  return (
+    <span
+      style={{
+        ...s.statusPill,
+        background: cfg.background,
+        color: cfg.color,
+        border: `1px solid ${cfg.border}`,
+      }}
+    >
+      <span style={{ ...s.statusDot, background: cfg.dot }} />
+      {paymentStatusLabel(status)}
     </span>
   );
 }
@@ -259,6 +284,266 @@ function NotesSection({ orderId, token }) {
   );
 }
 
+/* ─────────────────────────────────────────────
+   Payment Management — Task N1. Displays the current payment record and
+   valid next actions (Mark Paid / Mark Failed / Retry-Pending / Mark
+   Refunded), each with its own small form, plus the Private Payment
+   History timeline. Never shows every status in an open dropdown — only
+   the actions the backend would actually accept from the current state.
+───────────────────────────────────────────── */
+function PaymentSection({ order, token, onPaymentUpdated }) {
+  const [selectedAction, setSelectedAction] = useState(null);
+  const [method, setMethod] = useState(order.payment_method || "CASH_ON_DELIVERY");
+  const [reference, setReference] = useState("");
+  const [failureReason, setFailureReason] = useState("");
+  const [refundReason, setRefundReason] = useState("");
+  const [changeNote, setChangeNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [successMessage, setSuccessMessage] = useState("");
+
+  const actions = getPaymentStatusActions(order.payment_status);
+  const history = Array.isArray(order.payment_history) ? order.payment_history : [];
+
+  const resetForm = () => {
+    setSelectedAction(null);
+    setReference("");
+    setFailureReason("");
+    setRefundReason("");
+    setChangeNote("");
+  };
+
+  const openAction = (action) => {
+    setError("");
+    setSuccessMessage("");
+    setMethod(order.payment_method || "CASH_ON_DELIVERY");
+    setReference(order.transaction_reference || "");
+    setSelectedAction(action.to);
+  };
+
+  const submit = async () => {
+    if (selectedAction === "REFUNDED") {
+      const confirmed = window.confirm(
+        "Mark this payment as Refunded?\n\n" +
+          "This records the refund only. It does not change inventory, " +
+          "and it does not change the order's production status."
+      );
+      if (!confirmed) return;
+    }
+
+    setSaving(true);
+    setError("");
+    try {
+      const body = { status: selectedAction };
+      if (changeNote.trim()) body.change_note = changeNote.trim();
+      if (selectedAction === "PAID") {
+        body.payment_method = method;
+        body.transaction_reference = reference;
+      }
+      if (selectedAction === "FAILED") {
+        body.failure_reason = failureReason;
+      }
+      if (selectedAction === "REFUNDED") {
+        body.refund_reason = refundReason;
+      }
+
+      const res = await fetch(`${API_BASE}/orders/${order.id}/payment`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update payment.");
+
+      setSuccessMessage(`Payment marked ${paymentStatusLabel(selectedAction)}.`);
+      resetForm();
+      await onPaymentUpdated();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={s.paymentMgmtSection}>
+      <span style={s.infoLabel}>Payment Management</span>
+
+      <div style={s.infoGrid} className="ao-info-grid">
+        <InfoBlock label="Status" value={paymentStatusLabel(order.payment_status)} highlight />
+        <InfoBlock label="Method" value={paymentMethodLabel(order.payment_method)} />
+        <InfoBlock label="Transaction Reference" value={order.transaction_reference || "—"} />
+        <InfoBlock label="Paid" value={formatTimelineDate(order.paid_at)} />
+        <InfoBlock label="Failed" value={formatTimelineDate(order.failed_at)} />
+        <InfoBlock label="Refunded" value={formatTimelineDate(order.refunded_at)} />
+      </div>
+
+      {order.failure_reason && (
+        <div style={s.notesRow}>
+          <span style={s.infoLabel}>Failure Reason</span>
+          <span style={s.notesValue}>{order.failure_reason}</span>
+        </div>
+      )}
+      {order.refund_reason && (
+        <div style={s.notesRow}>
+          <span style={s.infoLabel}>Refund Reason</span>
+          <span style={s.notesValue}>{order.refund_reason}</span>
+        </div>
+      )}
+
+      {/* ── Action buttons ── */}
+      <div style={s.actionButtonsRow}>
+        {actions.length === 0 && (
+          <span style={s.finalStatusNote}>Refunded — final status, no actions.</span>
+        )}
+        {actions.map((action) => (
+          <button
+            key={action.to}
+            onClick={() => openAction(action)}
+            disabled={saving}
+            style={{
+              ...s.actionBtn,
+              ...(action.kind === "primary" ? s.actionBtnPrimary : {}),
+              ...(action.kind === "danger" ? s.actionBtnDanger : {}),
+              ...(selectedAction === action.to ? s.actionBtnSelected : {}),
+              ...(saving ? s.actionBtnDisabled : {}),
+            }}
+          >
+            {action.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Action form ── */}
+      {selectedAction && (
+        <div style={s.paymentFormBox}>
+          {selectedAction === "PAID" && (
+            <>
+              <label style={s.formFieldLabel}>
+                Payment Method
+                <select
+                  value={method}
+                  onChange={(e) => setMethod(e.target.value)}
+                  style={s.formSelect}
+                >
+                  {ALL_PAYMENT_METHODS.map((m) => (
+                    <option key={m} value={m}>{paymentMethodLabel(m)}</option>
+                  ))}
+                </select>
+              </label>
+              <label style={s.formFieldLabel}>
+                Transaction Reference{method === "BANK_TRANSFER" ? " (required)" : " (optional)"}
+                <input
+                  type="text"
+                  value={reference}
+                  onChange={(e) => setReference(e.target.value)}
+                  maxLength={200}
+                  style={s.formInput}
+                  placeholder="e.g. TRX-12345"
+                />
+              </label>
+            </>
+          )}
+
+          {selectedAction === "FAILED" && (
+            <label style={s.formFieldLabel}>
+              Failure Reason (required)
+              <input
+                type="text"
+                value={failureReason}
+                onChange={(e) => setFailureReason(e.target.value)}
+                style={s.formInput}
+                placeholder="e.g. Bank transfer never arrived"
+              />
+            </label>
+          )}
+
+          {selectedAction === "REFUNDED" && (
+            <label style={s.formFieldLabel}>
+              Refund Reason (required)
+              <input
+                type="text"
+                value={refundReason}
+                onChange={(e) => setRefundReason(e.target.value)}
+                style={s.formInput}
+                placeholder="e.g. Customer cancellation"
+              />
+            </label>
+          )}
+
+          <label style={s.formFieldLabel}>
+            Private Change Note (optional)
+            <textarea
+              value={changeNote}
+              onChange={(e) => setChangeNote(e.target.value)}
+              maxLength={2000}
+              style={s.adminNotesTextarea}
+              placeholder="Internal note about this payment change..."
+            />
+          </label>
+
+          <div style={s.notesAddRow}>
+            <button
+              onClick={submit}
+              disabled={
+                saving ||
+                (selectedAction === "FAILED" && !failureReason.trim()) ||
+                (selectedAction === "REFUNDED" && !refundReason.trim())
+              }
+              style={{
+                ...s.saveNoteBtn,
+                ...(saving ? s.saveNoteBtnDisabled : {}),
+              }}
+            >
+              {saving ? "Saving..." : `Confirm ${paymentStatusLabel(selectedAction)}`}
+            </button>
+            <button onClick={resetForm} disabled={saving} style={s.noteCancelBtn}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {error && <p style={s.saveErrorText}>{error}</p>}
+      {successMessage && !error && <p style={s.successText}>{successMessage}</p>}
+
+      {/* ── Private Payment History ── */}
+      <div style={s.timelineSection}>
+        <span style={s.infoLabel}>Private Payment History</span>
+        <span style={s.notesPrivacyNote}>
+          Customers can see payment statuses but cannot see private payment notes.
+        </span>
+        <div style={s.timelineList}>
+          {history.length === 0 ? (
+            <p style={s.timelineEmpty}>No payment changes yet.</p>
+          ) : (
+            [...history].reverse().map((entry) => (
+              <div key={entry.id} style={s.timelineRow}>
+                <span style={s.timelineDot} />
+                <div style={s.timelineContent}>
+                  <span style={s.timelineText}>
+                    {paymentStatusLabel(entry.old_status)} → {paymentStatusLabel(entry.new_status)}
+                  </span>
+                  <span style={s.timelineDate}>
+                    {formatTimelineDate(entry.created_at)}
+                    {entry.changed_by_email ? ` · ${entry.changed_by_email}` : ""}
+                  </span>
+                  {entry.change_note && (
+                    <span style={s.paymentHistoryNote}>{entry.change_note}</span>
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function OrderCard({ order, onOrderUpdated, productImageMap, token }) {
   const [expanded, setExpanded] = useState(false);
   const [savingStatus, setSavingStatus] = useState(false);
@@ -337,6 +622,15 @@ function OrderCard({ order, onOrderUpdated, productImageMap, token }) {
             </span>
           )}
         </div>
+      </div>
+
+      {/* ── Payment Summary Row (always visible) ── */}
+      <div style={s.paymentSummaryRow}>
+        <PaymentStatusBadge status={order.payment_status} />
+        <span style={s.paymentMethodTag}>{paymentMethodLabel(order.payment_method)}</span>
+        {order.refund_required && (
+          <span style={s.refundRequiredBadge}>⚠ Refund Required</span>
+        )}
       </div>
 
       {/* ── Summary Row (always visible) ── */}
@@ -507,6 +801,11 @@ function OrderCard({ order, onOrderUpdated, productImageMap, token }) {
             </div>
           </div>
 
+          {/* ── Payment Management ── */}
+          {expanded && (
+            <PaymentSection order={order} token={token} onPaymentUpdated={onOrderUpdated} />
+          )}
+
           {/* ── Private Owner Notes ── */}
           {expanded && <NotesSection orderId={order.id} token={token} />}
         </div>
@@ -567,6 +866,9 @@ const EMPTY_FILTERS = {
   customized: "all",
   dateFrom: "",
   dateTo: "",
+  paymentStatus: "all",
+  paymentMethod: "all",
+  refundRequired: "all",
 };
 
 export default function AdminOrders() {
@@ -644,6 +946,15 @@ export default function AdminOrders() {
       to.setHours(23, 59, 59, 999);
       list = list.filter((o) => new Date(o.created_at) <= to);
     }
+    if (filters.paymentStatus !== "all") {
+      list = list.filter((o) => o.payment_status === filters.paymentStatus);
+    }
+    if (filters.paymentMethod !== "all") {
+      list = list.filter((o) => o.payment_method === filters.paymentMethod);
+    }
+    if (filters.refundRequired !== "all") {
+      list = list.filter((o) => Boolean(o.refund_required) === (filters.refundRequired === "true"));
+    }
 
     const normalizedSearch = filters.search.trim().toLowerCase();
     if (normalizedSearch) {
@@ -662,13 +973,25 @@ export default function AdminOrders() {
     [orders]
   );
 
+  const paymentCounts = useMemo(
+    () =>
+      ALL_PAYMENT_STATUSES.reduce((acc, statusKey) => {
+        acc[statusKey] = orders.filter((o) => o.payment_status === statusKey).length;
+        return acc;
+      }, {}),
+    [orders]
+  );
+
   const filtersActive =
     filters.status !== "all" ||
     filters.search.trim() !== "" ||
     filters.gift !== "all" ||
     filters.customized !== "all" ||
     filters.dateFrom !== "" ||
-    filters.dateTo !== "";
+    filters.dateTo !== "" ||
+    filters.paymentStatus !== "all" ||
+    filters.paymentMethod !== "all" ||
+    filters.refundRequired !== "all";
 
   return (
     <>
@@ -711,6 +1034,21 @@ export default function AdminOrders() {
               ))}
             </div>
 
+            <div style={s.statsRow}>
+              <StatChip label="All Payments" count={orders.length} active={filters.paymentStatus === "all"}
+                onClick={() => setFilter("paymentStatus", "all")} color="#1a1a1a" />
+              {ALL_PAYMENT_STATUSES.map((statusKey) => (
+                <StatChip
+                  key={statusKey}
+                  label={paymentStatusLabel(statusKey)}
+                  count={paymentCounts[statusKey]}
+                  active={filters.paymentStatus === statusKey}
+                  onClick={() => setFilter("paymentStatus", statusKey)}
+                  color={getPaymentStatusBadgeStyle(statusKey).color}
+                />
+              ))}
+            </div>
+
             <div style={s.toggleFiltersRow} className="ao-toggle-filters-row">
               <ToggleFilter
                 label="Gift Orders"
@@ -722,6 +1060,25 @@ export default function AdminOrders() {
                 value={filters.customized}
                 onChange={(v) => setFilter("customized", v)}
               />
+              <ToggleFilter
+                label="Refund Required"
+                value={filters.refundRequired}
+                onChange={(v) => setFilter("refundRequired", v)}
+              />
+
+              <label style={s.dateLabel}>
+                Payment Method
+                <select
+                  value={filters.paymentMethod}
+                  onChange={(e) => setFilter("paymentMethod", e.target.value)}
+                  style={s.dateInput}
+                >
+                  <option value="all">All</option>
+                  {ALL_PAYMENT_METHODS.map((m) => (
+                    <option key={m} value={m}>{paymentMethodLabel(m)}</option>
+                  ))}
+                </select>
+              </label>
 
               <div style={s.dateFilterGroup}>
                 <label style={s.dateLabel}>
@@ -1101,6 +1458,36 @@ const s = {
     fontFamily: "sans-serif",
     fontWeight: "600",
   },
+
+  // Payment summary (Task N1)
+  paymentSummaryRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    flexWrap: "wrap",
+    marginBottom: "16px",
+  },
+  paymentMethodTag: {
+    fontSize: "0.72rem",
+    color: "#888",
+    fontFamily: "sans-serif",
+    letterSpacing: "0.04em",
+  },
+  refundRequiredBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "5px",
+    padding: "3px 10px",
+    background: "#fff4e6",
+    color: "#a35b00",
+    border: "1px solid #f0c98a",
+    fontSize: "0.66rem",
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    fontFamily: "sans-serif",
+    fontWeight: "600",
+  },
+
   orderId: {
     fontFamily: "monospace",
     fontSize: "0.95rem",
@@ -1305,6 +1692,62 @@ const s = {
     fontSize: "0.72rem",
     letterSpacing: "0.08em",
     textTransform: "uppercase",
+  },
+
+  // Payment Management (Task N1)
+  paymentMgmtSection: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "8px",
+    marginTop: "10px",
+    paddingTop: "16px",
+    borderTop: "1px solid #f0ece6",
+  },
+  actionBtnSelected: {
+    boxShadow: "0 0 0 2px rgba(26,26,26,0.25)",
+  },
+  paymentFormBox: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "12px",
+    padding: "14px 16px",
+    background: "#faf9f7",
+    border: "1px solid #eee4d8",
+    marginTop: "6px",
+  },
+  formFieldLabel: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "5px",
+    fontSize: "0.65rem",
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    color: "#b0a898",
+    fontFamily: "sans-serif",
+  },
+  formSelect: {
+    padding: "9px 10px",
+    border: "1px solid #ddd8d0",
+    background: "#fff",
+    fontFamily: "'Georgia', serif",
+    fontSize: "0.82rem",
+    color: "#1a1a1a",
+  },
+  formInput: {
+    padding: "9px 10px",
+    border: "1px solid #ddd8d0",
+    background: "#fff",
+    fontFamily: "'Georgia', serif",
+    fontSize: "0.82rem",
+    color: "#1a1a1a",
+    boxSizing: "border-box",
+  },
+  paymentHistoryNote: {
+    fontSize: "0.72rem",
+    color: "#888",
+    fontFamily: "sans-serif",
+    fontStyle: "italic",
+    marginTop: "2px",
   },
 
   timelineSection: {

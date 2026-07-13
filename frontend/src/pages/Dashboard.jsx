@@ -4,6 +4,15 @@ import AdminNav from "../components/AdminNav";
 import API_BASE from "../config/api";
 import { statusLabel } from "../utils/orderStatus";
 
+// Task N1 correction: Simplicity prices are Turkish lira, not dollars —
+// this was the wrong-currency bug. Matches the ₺/tr-TR convention already
+// used in AdminOrders.jsx/MyOrders.jsx/Checkout.jsx (no shared formatter
+// utility exists yet in this project, so this mirrors their inline pattern
+// rather than introducing a second, inconsistent one).
+function formatTRY(amount) {
+  return `₺${Number(amount || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2 })}`;
+}
+
 function Dashboard({ user, setUser }) {
   const navigate = useNavigate();
 
@@ -104,13 +113,23 @@ function Dashboard({ user, setUser }) {
   const earnings = useMemo(() => {
     const nonCancelledOrders = orders.filter((o) => o.status !== "cancelled");
 
-    const totalRevenue = nonCancelledOrders.reduce(
+    // Task N1 correction: this is the sum of order totals regardless of
+    // payment status — it must never be called "revenue" (only PAID
+    // payments may be). Kept under a non-revenue name; see paymentStats
+    // below for the actual Paid Revenue figure.
+    const totalOrderValue = nonCancelledOrders.reduce(
       (sum, o) => sum + Number(o.total_price || 0),
       0
     );
 
     const productSales = {};
 
+    // Task N1 correction: ranked by sales volume across all non-cancelled
+    // orders (payment status doesn't affect what counts as "best-selling"),
+    // but the accompanying monetary figure is order value, not revenue —
+    // only a PAID payment may ever be called revenue. Field named
+    // order_value (not revenue) to make that distinction impossible to miss
+    // at the call site.
     nonCancelledOrders.forEach((order) => {
       (order.items || []).forEach((item) => {
         const key =
@@ -123,12 +142,12 @@ function Dashboard({ user, setUser }) {
             product_id: item.product_id,
             product_name: item.product_name,
             quantity: 0,
-            revenue: 0,
+            order_value: 0,
           };
         }
 
         productSales[key].quantity += Number(item.quantity || 0);
-        productSales[key].revenue +=
+        productSales[key].order_value +=
           Number(item.quantity || 0) * Number(item.unit_price || 0);
       });
     });
@@ -155,11 +174,28 @@ function Dashboard({ user, setUser }) {
       });
 
     return {
-      totalRevenue,
+      totalOrderValue,
       totalItemsSold,
       bestSellingProducts,
     };
   }, [orders, products]);
+
+  // Task N1: payment stats, derived from the same admin orders list — each
+  // order already carries payment_status/refund_required additively.
+  // "Paid Revenue" only ever sums orders whose payment is actually PAID —
+  // never Pending/Failed/Refunded/Cancelled — so it stays a true
+  // paid-revenue figure, distinct from the "Total Order Value" card above
+  // (which reflects order value regardless of payment status).
+  const paymentStats = useMemo(() => {
+    const pendingPayments = orders.filter((o) => o.payment_status === "PENDING").length;
+    const paidOrders = orders.filter((o) => o.payment_status === "PAID").length;
+    const refundRequiredCount = orders.filter((o) => o.refund_required).length;
+    const paidRevenue = orders
+      .filter((o) => o.payment_status === "PAID")
+      .reduce((sum, o) => sum + Number(o.total_price || 0), 0);
+
+    return { pendingPayments, paidOrders, refundRequiredCount, paidRevenue };
+  }, [orders]);
 
   const outOfStockProducts = useMemo(
     () => products.filter((p) => Number(p.stock_quantity || 0) <= 0),
@@ -230,8 +266,8 @@ function Dashboard({ user, setUser }) {
 
           <div style={styles.statsGrid}>
             <StatCard
-              label="Total Revenue"
-              value={`$${earnings.totalRevenue.toFixed(2)}`}
+              label="Total Order Value"
+              value={formatTRY(earnings.totalOrderValue)}
             />
             <StatCard label="Total Orders" value={stats.totalOrders} />
             <StatCard
@@ -239,6 +275,19 @@ function Dashboard({ user, setUser }) {
               value={earnings.totalItemsSold}
             />
             <StatCard label="Delivered Orders" value={stats.deliveredOrders} />
+          </div>
+
+          <div style={{ marginTop: "18px" }}>
+            <p style={styles.smallEyebrow}>Payments</p>
+            <div style={styles.statsGrid}>
+              <StatCard label="Pending Payments" value={paymentStats.pendingPayments} />
+              <StatCard label="Paid Orders" value={paymentStats.paidOrders} />
+              <StatCard label="Refund Required" value={paymentStats.refundRequiredCount} />
+              <StatCard
+                label="Paid Revenue"
+                value={formatTRY(paymentStats.paidRevenue)}
+              />
+            </div>
           </div>
 
           <div style={{ marginTop: "22px" }}>
@@ -259,7 +308,7 @@ function Dashboard({ user, setUser }) {
                         {product.quantity} sold
                       </p>
                     </div>
-                    <strong>${product.revenue.toFixed(2)}</strong>
+                    <strong>{formatTRY(product.order_value)}</strong>
                   </div>
                 ))}
               </div>
@@ -370,7 +419,7 @@ function Dashboard({ user, setUser }) {
                       </div>
                     </div>
 
-                    <strong>${Number(product.base_price || 0).toFixed(2)}</strong>
+                    <strong>{formatTRY(product.base_price)}</strong>
                   </div>
                 ))}
               </div>
