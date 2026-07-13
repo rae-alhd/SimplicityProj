@@ -22,12 +22,9 @@ const {
 const {
   SHIPPING_METHOD_LABELS,
   VALID_SHIPPING_METHODS,
-  MAX_CARRIER_NAME_LENGTH,
-  MAX_TRACKING_NUMBER_LENGTH,
-  MAX_TRACKING_URL_LENGTH,
-  MAX_PRIVATE_NOTE_LENGTH,
   isSafeTrackingUrl,
-  isValidDateOnlyString,
+  validateFulfillmentInput,
+  validateReadyToShippedRequirements,
 } = require("../utils/fulfillment");
 
 /* ─────────────────────────────────────────────
@@ -1558,140 +1555,6 @@ router.patch("/:orderId/payment", authMiddleware, adminOnly, async (req, res) =>
 // whole transaction and return a controlled 400 instead of a generic 500 —
 // distinct from any other unexpected error.
 class MissingInventoryForCancellationError extends Error {}
-
-/* ─────────────────────────────────────────────
-   Task O1: field-level validation for whichever fulfillment fields are
-   present in a request body — shared by the standalone PATCH
-   /:orderId/fulfillment endpoint and the Ready -> Shipped transition below,
-   so the two never drift apart. Only validates/normalizes fields that were
-   actually provided (key present, not undefined); anything absent is left
-   out of the returned `fields` object entirely so callers can tell "not
-   sent" apart from "explicitly cleared."
-───────────────────────────────────────────── */
-function validateFulfillmentInput(body) {
-  const fields = {};
-
-  if (body.shipping_method !== undefined) {
-    if (!VALID_SHIPPING_METHODS.includes(body.shipping_method)) {
-      return {
-        ok: false,
-        error: `shipping_method must be one of: ${VALID_SHIPPING_METHODS.join(", ")}`,
-      };
-    }
-    fields.shipping_method = body.shipping_method;
-  }
-
-  if (body.carrier_name !== undefined) {
-    const trimmed = typeof body.carrier_name === "string" ? body.carrier_name.trim() : "";
-    if (trimmed.length > MAX_CARRIER_NAME_LENGTH) {
-      return {
-        ok: false,
-        error: `carrier_name must be ${MAX_CARRIER_NAME_LENGTH} characters or fewer.`,
-      };
-    }
-    fields.carrier_name = trimmed || null;
-  }
-
-  if (body.tracking_number !== undefined) {
-    const trimmed = typeof body.tracking_number === "string" ? body.tracking_number.trim() : "";
-    if (trimmed.length > MAX_TRACKING_NUMBER_LENGTH) {
-      return {
-        ok: false,
-        error: `tracking_number must be ${MAX_TRACKING_NUMBER_LENGTH} characters or fewer.`,
-      };
-    }
-    fields.tracking_number = trimmed || null;
-  }
-
-  if (body.tracking_url !== undefined) {
-    const trimmed = typeof body.tracking_url === "string" ? body.tracking_url.trim() : "";
-    if (!trimmed) {
-      fields.tracking_url = null;
-    } else if (trimmed.length > MAX_TRACKING_URL_LENGTH) {
-      return {
-        ok: false,
-        error: `tracking_url must be ${MAX_TRACKING_URL_LENGTH} characters or fewer.`,
-      };
-    } else if (!isSafeTrackingUrl(trimmed)) {
-      // Rejects javascript:, data:, and any other malformed/unsafe value —
-      // only well-formed http:// or https:// URLs are ever accepted.
-      return {
-        ok: false,
-        error: "tracking_url must be a valid http:// or https:// link.",
-      };
-    } else {
-      fields.tracking_url = trimmed;
-    }
-  }
-
-  if (body.estimated_delivery_date !== undefined) {
-    if (body.estimated_delivery_date === null || body.estimated_delivery_date === "") {
-      fields.estimated_delivery_date = null;
-    } else if (!isValidDateOnlyString(body.estimated_delivery_date)) {
-      return {
-        ok: false,
-        error: "estimated_delivery_date must be a valid date (YYYY-MM-DD).",
-      };
-    } else {
-      fields.estimated_delivery_date = body.estimated_delivery_date;
-    }
-  }
-
-  if (body.private_note !== undefined) {
-    const trimmed = typeof body.private_note === "string" ? body.private_note.trim() : "";
-    if (trimmed.length > MAX_PRIVATE_NOTE_LENGTH) {
-      return {
-        ok: false,
-        error: `private_note must be ${MAX_PRIVATE_NOTE_LENGTH} characters or fewer.`,
-      };
-    }
-    fields.private_note = trimmed || null;
-  }
-
-  // Task O1 correction: must be a real boolean — an arbitrary truthy value
-  // (e.g. the string "true") is never silently coerced, it's rejected.
-  if (body.tracking_unavailable !== undefined) {
-    if (typeof body.tracking_unavailable !== "boolean") {
-      return {
-        ok: false,
-        error: "tracking_unavailable must be a boolean.",
-      };
-    }
-    fields.tracking_unavailable = body.tracking_unavailable;
-  }
-
-  return { ok: true, fields };
-}
-
-// Business rules specific to actually marking an order Shipped — separate
-// from the generic field validation above, since a plain fulfillment edit
-// (PATCH /:orderId/fulfillment) never requires any of this.
-function validateReadyToShippedRequirements(fields, trackingUnavailable) {
-  if (!fields.shipping_method) {
-    return {
-      ok: false,
-      error: "shipping_method is required to mark an order as Shipped.",
-    };
-  }
-
-  if (fields.shipping_method === "COURIER") {
-    if (!fields.carrier_name) {
-      return {
-        ok: false,
-        error: "carrier_name is required for Courier shipments.",
-      };
-    }
-    if (!fields.tracking_number && !trackingUnavailable) {
-      return {
-        ok: false,
-        error:
-          "tracking_number is required for Courier shipments unless tracking is explicitly marked unavailable.",
-      };
-    }
-  }
-
-  return { ok: true };
-}
 
 router.patch("/:id/status", authMiddleware, adminOnly, async (req, res) => {
   const orderId = parseInt(req.params.id);

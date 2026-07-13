@@ -1,0 +1,114 @@
+name: CI
+
+# Task P1: continuous integration for Simplicity — backend unit +
+# integration tests (against an isolated, ephemeral PostgreSQL service
+# container, never a real database), frontend tests, and a production
+# build. No deployment happens here.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel superseded runs on the same branch/PR to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "24"
+  # Test-only secret, never a real credential — only ever used to sign and
+  # verify JWTs against the ephemeral test database created below.
+  JWT_SECRET: ci-test-only-secret-not-a-real-credential
+  JWT_EXPIRES_IN: "1h"
+
+jobs:
+  backend:
+    name: Backend (unit + integration)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: simplicity_test_db
+        ports:
+          - 5432:5432
+        # Wait for PostgreSQL to actually be ready before any job step
+        # tries to connect — avoids flaky "connection refused" failures.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      NODE_ENV: test
+      # Deliberately named with "test_db" — satisfies this project's own
+      # TEST_DATABASE_URL safety guard (backend/src/config/testDbGuard.js),
+      # which refuses to run against anything that doesn't look like a
+      # test database.
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/simplicity_test_db
+      # DATABASE_URL is intentionally left unset in CI — nothing here ever
+      # needs the real app database, and leaving it unset means any code
+      # path that accidentally ignored NODE_ENV=test would fail loudly
+      # instead of silently reaching a real connection string.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Apply migrations to the test database
+        working-directory: backend
+        run: node scripts/migrate-test-db.js
+
+      - name: Run backend unit tests
+        working-directory: backend
+        run: npm run test:unit
+
+      - name: Run backend integration tests
+        working-directory: backend
+        run: npm run test:integration
+
+      - name: Run backend coverage
+        working-directory: backend
+        run: npm run test:coverage
+
+  frontend:
+    name: Frontend (tests + build)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm run test:run
+
+      - name: Run frontend coverage
+        working-directory: frontend
+        run: npm run test:coverage
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
