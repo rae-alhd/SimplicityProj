@@ -1,21 +1,19 @@
 import { useEffect, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import API_BASE from "../config/api";
-
-const STATUS_CONFIG = {
-  pending:   { label: "Pending",   bg: "#fff8ec", color: "#b07d2a", border: "#f0d9a0", dot: "#e6a820" },
-  confirmed: { label: "Confirmed", bg: "#edf6ff", color: "#1a6fb5", border: "#b3d4f5", dot: "#1a6fb5" },
-  delivered: { label: "Delivered", bg: "#edfbf3", color: "#1a7a45", border: "#a3dfc0", dot: "#1a7a45" },
-  cancelled: { label: "Cancelled", bg: "#fdf2f2", color: "#b52a2a", border: "#f0b3b3", dot: "#c0392b" },
-};
+import {
+  buildCustomerStages,
+  getStatusBadgeStyle,
+  statusLabel,
+} from "../utils/orderStatus";
 
 function StatusBadge({ status }) {
-  const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.pending;
+  const cfg = getStatusBadgeStyle(status);
   return (
     <span style={{
       display: "inline-flex", alignItems: "center", gap: "6px",
       padding: "5px 12px",
-      background: cfg.bg, color: cfg.color,
+      background: cfg.background, color: cfg.color,
       border: `1px solid ${cfg.border}`,
       fontSize: "0.68rem", letterSpacing: "0.14em",
       textTransform: "uppercase", fontFamily: "sans-serif", fontWeight: "500",
@@ -24,8 +22,80 @@ function StatusBadge({ status }) {
         width: "6px", height: "6px", borderRadius: "50%",
         background: cfg.dot, flexShrink: 0,
       }} />
-      {cfg.label}
+      {statusLabel(status)}
     </span>
+  );
+}
+
+function formatStageDate(dateString) {
+  if (!dateString) return "";
+  return new Date(dateString).toLocaleDateString("tr-TR", {
+    day: "2-digit", month: "short",
+  });
+}
+
+/* ─────────────────────────────────────────────
+   Task M1: customer-safe progress timeline. Cancelled orders show only
+   their real history (never later stages as "pending"); everything else
+   gets a forward-looking stepper that only includes Design Review if the
+   order actually passed through it (or could still go there from New).
+───────────────────────────────────────────── */
+function OrderProgress({ order }) {
+  if (order.status === "cancelled") {
+    const timeline = Array.isArray(order.status_timeline) ? order.status_timeline : [];
+    return (
+      <div style={s.progressWrap}>
+        {timeline.map((entry, idx) => (
+          <div key={idx} style={s.cancelledHistoryRow}>
+            <span style={{ ...s.stageDot, ...s.stageDotCompleted }} />
+            <span style={s.cancelledHistoryLabel}>{entry.status_label}</span>
+            <span style={s.cancelledHistoryDate}>{formatStageDate(entry.timestamp)}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  const stages = buildCustomerStages(order);
+
+  return (
+    <div style={s.progressWrap}>
+      <div style={s.progressStepper}>
+        {stages.map((stage, idx) => (
+          <div key={stage.status} style={s.progressStep}>
+            <div style={s.progressStepTop}>
+              <span
+                style={{
+                  ...s.stageDot,
+                  ...(stage.state === "completed" ? s.stageDotCompleted : {}),
+                  ...(stage.state === "current" ? s.stageDotCurrent : {}),
+                }}
+              />
+              {idx < stages.length - 1 && (
+                <span
+                  style={{
+                    ...s.stageConnector,
+                    ...(stage.state === "completed" ? s.stageConnectorDone : {}),
+                  }}
+                />
+              )}
+            </div>
+            <span
+              style={{
+                ...s.stageLabel,
+                ...(stage.state === "upcoming" ? s.stageLabelUpcoming : {}),
+                ...(stage.state === "current" ? s.stageLabelCurrent : {}),
+              }}
+            >
+              {stage.label}
+            </span>
+            {stage.timestamp && (
+              <span style={s.stageDate}>{formatStageDate(stage.timestamp)}</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -89,6 +159,9 @@ function OrderCard({ order }) {
           <span style={s.notesText}>"{order.notes}"</span>
         </div>
       )}
+
+      {/* ── Progress Timeline ── */}
+      <OrderProgress order={order} />
 
       {/* ── Items Accordion ── */}
       {items.length > 0 && (
@@ -465,6 +538,97 @@ const s = {
   notesText: {
     fontSize: "0.8rem", color: "#999",
     fontStyle: "italic", fontFamily: "sans-serif", lineHeight: "1.5",
+  },
+
+  // Progress timeline (Task M1)
+  progressWrap: {
+    marginTop: "6px",
+    marginBottom: "6px",
+    paddingTop: "16px",
+    borderTop: "1px solid #f0ece6",
+  },
+  progressStepper: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: "2px",
+  },
+  progressStep: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    flex: 1,
+    minWidth: 0,
+    textAlign: "center",
+  },
+  progressStepTop: {
+    display: "flex",
+    alignItems: "center",
+    width: "100%",
+  },
+  stageDot: {
+    width: "12px",
+    height: "12px",
+    borderRadius: "50%",
+    background: "#fff",
+    border: "2px solid #d8d0c4",
+    flexShrink: 0,
+    margin: "0 auto",
+  },
+  stageDotCompleted: {
+    background: "#1a1a1a",
+    borderColor: "#1a1a1a",
+  },
+  stageDotCurrent: {
+    background: "#fff",
+    borderColor: "#1a1a1a",
+    boxShadow: "0 0 0 3px rgba(26,26,26,0.12)",
+  },
+  stageConnector: {
+    flex: 1,
+    height: "2px",
+    background: "#e8e2d9",
+    marginLeft: "-6px",
+    marginRight: "-6px",
+  },
+  stageConnectorDone: {
+    background: "#1a1a1a",
+  },
+  stageLabel: {
+    marginTop: "8px",
+    fontSize: "0.62rem",
+    letterSpacing: "0.06em",
+    textTransform: "uppercase",
+    color: "#1a1a1a",
+    fontFamily: "sans-serif",
+    lineHeight: "1.4",
+  },
+  stageLabelCurrent: {
+    fontWeight: "700",
+  },
+  stageLabelUpcoming: {
+    color: "#c8c0b4",
+  },
+  stageDate: {
+    marginTop: "2px",
+    fontSize: "0.6rem",
+    color: "#bbb",
+    fontFamily: "sans-serif",
+  },
+  cancelledHistoryRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    marginBottom: "6px",
+  },
+  cancelledHistoryLabel: {
+    fontSize: "0.78rem",
+    color: "#1a1a1a",
+    fontFamily: "sans-serif",
+  },
+  cancelledHistoryDate: {
+    fontSize: "0.66rem",
+    color: "#bbb",
+    fontFamily: "sans-serif",
   },
 
   // Accordion

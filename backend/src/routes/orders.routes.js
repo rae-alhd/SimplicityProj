@@ -7,6 +7,11 @@ const {
   resolveMainImageUrl,
 } = require("../utils/productImages");
 const { resolveInventoryVariant } = require("../utils/inventory");
+const {
+  STATUS_LABELS,
+  VALID_STATUSES,
+  validateTransition,
+} = require("../utils/orderStatus");
 
 /* ─────────────────────────────────────────────
    HELPER: admin-only guard
@@ -582,10 +587,11 @@ const cartResult = await client.query(
       return sum + parseFloat(item.final_unit_price) * item.quantity;
     }, 0);
 
-    // 3. Create the order
+    // 3. Create the order. Task M1: new orders start at 'new', the first
+    // stage of the production workflow (was 'pending').
     const orderResult = await client.query(
       `INSERT INTO orders (user_id, customer_name, phone, address, notes, total_price, status, is_gift)
-       VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)
+       VALUES ($1, $2, $3, $4, $5, $6, 'new', $7)
        RETURNING *`,
       [
         userId,
@@ -717,6 +723,32 @@ for (let i = 0; i < cartItems.length; i++) {
 });
 
 /* ─────────────────────────────────────────────
+   Task M1: builds a customer-safe timeline from the real
+   order_status_history rows, prefixed with the implicit "New" stage that
+   begins at order creation (never has its own history row). Exposes only
+   status/label/timestamp — no changed_by, no internal user IDs.
+───────────────────────────────────────────── */
+function buildCustomerTimeline(order, historyRows) {
+  const timeline = [
+    {
+      status: "new",
+      status_label: STATUS_LABELS.new,
+      timestamp: order.created_at,
+    },
+  ];
+
+  for (const entry of historyRows) {
+    timeline.push({
+      status: entry.new_status,
+      status_label: STATUS_LABELS[entry.new_status] || entry.new_status,
+      timestamp: entry.created_at,
+    });
+  }
+
+  return timeline;
+}
+
+/* ─────────────────────────────────────────────
    GET /api/orders/my
    Logged-in user's own orders with their items.
 ───────────────────────────────────────────── */
@@ -754,11 +786,31 @@ router.get("/my", authMiddleware, async (req, res) => {
       itemsByOrder[item.order_id].push(item);
     }
 
-    // Attach items to each order
-    const ordersWithItems = orders.map((order) => ({
-      ...order,
-      items: itemsByOrder[order.id] || [],
-    }));
+    // Customer-safe timeline: status_history minus changed_by/internal IDs.
+    const historyResult = await pool.query(
+      `SELECT order_id, new_status, created_at
+       FROM order_status_history WHERE order_id = ANY($1::int[]) ORDER BY created_at ASC`,
+      [orderIds]
+    );
+
+    const historyByOrder = {};
+    for (const entry of historyResult.rows) {
+      if (!historyByOrder[entry.order_id]) historyByOrder[entry.order_id] = [];
+      historyByOrder[entry.order_id].push(entry);
+    }
+
+    // Attach items to each order. admin_notes (the legacy single-field
+    // internal note column) is explicitly stripped here — customers must
+    // never receive it, and `SELECT *` above would otherwise include it.
+    const ordersWithItems = orders.map((order) => {
+      const { admin_notes, ...safeOrder } = order;
+      return {
+        ...safeOrder,
+        status_display_label: STATUS_LABELS[order.status] || order.status,
+        status_timeline: buildCustomerTimeline(order, historyByOrder[order.id] || []),
+        items: itemsByOrder[order.id] || [],
+      };
+    });
 
     res.json(ordersWithItems);
   } catch (err) {
@@ -769,15 +821,79 @@ router.get("/my", authMiddleware, async (req, res) => {
 
 /* ─────────────────────────────────────────────
    GET /api/orders
-   Admin only — all orders with items.
+   Admin only — all orders with items. Task M1 adds optional filters, all
+   applied server-side with parameterized SQL:
+     ?status=in_production
+     ?search=jane            (order number, customer name, or email)
+     ?gift=true|false
+     ?customized=true|false  (at least one order_item.is_customized)
+     ?date_from=2026-01-01   (created_at >=, inclusive)
+     ?date_to=2026-01-31     (created_at <, i.e. through end of that day)
+   Response shape is unchanged/additive: every existing field stays, plus
+   status_display_label, contains_customized_items, item_count per order.
 ───────────────────────────────────────────── */
 router.get("/", authMiddleware, adminOnly, async (req, res) => {
+  const { status, search, gift, customized, date_from, date_to } = req.query;
+
   try {
+    const conditions = [];
+    const params = [];
+
+    if (status) {
+      if (!VALID_STATUSES.includes(status)) {
+        return res.status(400).json({
+          error: `status must be one of: ${VALID_STATUSES.join(", ")}`,
+        });
+      }
+      params.push(status);
+      conditions.push(`o.status = $${params.length}`);
+    }
+
+    if (gift === "true" || gift === "false") {
+      params.push(gift === "true");
+      conditions.push(`o.is_gift = $${params.length}`);
+    }
+
+    if (customized === "true") {
+      conditions.push(
+        `EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND oi.is_customized = true)`
+      );
+    } else if (customized === "false") {
+      conditions.push(
+        `NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND oi.is_customized = true)`
+      );
+    }
+
+    if (search && search.trim()) {
+      const term = `%${search.trim()}%`;
+      params.push(term);
+      const searchParamText = `$${params.length}`;
+      params.push(term);
+      const searchParamId = `$${params.length}`;
+      conditions.push(
+        `(o.customer_name ILIKE ${searchParamText} OR u.email ILIKE ${searchParamText} OR CAST(o.id AS TEXT) ILIKE ${searchParamId} OR LPAD(CAST(o.id AS TEXT), 5, '0') ILIKE ${searchParamId})`
+      );
+    }
+
+    if (date_from) {
+      params.push(date_from);
+      conditions.push(`o.created_at >= $${params.length}::date`);
+    }
+
+    if (date_to) {
+      params.push(date_to);
+      conditions.push(`o.created_at < ($${params.length}::date + INTERVAL '1 day')`);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
     const ordersResult = await pool.query(
       `SELECT o.*, u.email AS user_email
        FROM orders o
        JOIN users u ON u.id = o.user_id
-       ORDER BY o.created_at DESC`
+       ${whereClause}
+       ORDER BY o.created_at DESC`,
+      params
     );
 
     const orders = ordersResult.rows;
@@ -802,8 +918,13 @@ router.get("/", authMiddleware, adminOnly, async (req, res) => {
       itemsByOrder[item.order_id].push(item);
     }
 
+    // changed_by resolved to an email for display — never a bare internal
+    // user ID left for the admin UI to guess at.
     const historyResult = await pool.query(
-      `SELECT * FROM order_status_history WHERE order_id = ANY($1::int[]) ORDER BY created_at ASC`,
+      `SELECT h.*, u.email AS changed_by_email
+       FROM order_status_history h
+       LEFT JOIN users u ON u.id = h.changed_by
+       WHERE h.order_id = ANY($1::int[]) ORDER BY h.created_at ASC`,
       [orderIds]
     );
 
@@ -813,11 +934,17 @@ router.get("/", authMiddleware, adminOnly, async (req, res) => {
       historyByOrder[entry.order_id].push(entry);
     }
 
-    const ordersWithItems = orders.map((order) => ({
-      ...order,
-      items: itemsByOrder[order.id] || [],
-      status_history: historyByOrder[order.id] || [],
-    }));
+    const ordersWithItems = orders.map((order) => {
+      const items = itemsByOrder[order.id] || [];
+      return {
+        ...order,
+        status_display_label: STATUS_LABELS[order.status] || order.status,
+        contains_customized_items: items.some((item) => item.is_customized),
+        item_count: items.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
+        items,
+        status_history: historyByOrder[order.id] || [],
+      };
+    });
 
     res.json(ordersWithItems);
   } catch (err) {
@@ -828,8 +955,10 @@ router.get("/", authMiddleware, adminOnly, async (req, res) => {
 
 /* ─────────────────────────────────────────────
    PATCH /api/orders/:id/status
-   Admin only — update order status.
-   Body: { status: "pending"|"confirmed"|"delivered"|"cancelled" }
+   Admin only — move an order through the production workflow:
+   new -> design_review -> in_production -> ready -> shipped -> delivered
+   (new/design_review/in_production/ready may also go to cancelled).
+   Body: { status: "new"|"design_review"|"in_production"|"ready"|"shipped"|"delivered"|"cancelled" }
 ───────────────────────────────────────────── */
 // Thrown when a cancellation needs to restock an item whose GENERAL product
 // or VARIANT inventory row no longer exists. Caught below to roll back the
@@ -841,10 +970,9 @@ router.patch("/:id/status", authMiddleware, adminOnly, async (req, res) => {
   const orderId = parseInt(req.params.id);
   const { status } = req.body;
 
-  const validStatuses = ["pending", "confirmed", "delivered", "cancelled"];
-  if (!status || !validStatuses.includes(status)) {
+  if (!status || !VALID_STATUSES.includes(status)) {
     return res.status(400).json({
-      error: `status must be one of: ${validStatuses.join(", ")}`,
+      error: `status must be one of: ${VALID_STATUSES.join(", ")}`,
     });
   }
 
@@ -866,6 +994,25 @@ router.patch("/:id/status", authMiddleware, adminOnly, async (req, res) => {
     }
 
     const currentOrder = orderResult.rows[0];
+
+    // Task M1: enforce the production-workflow transition graph before
+    // touching anything. Re-selecting the same status is a no-op success —
+    // no history row, no restock, no write at all.
+    const transition = validateTransition(currentOrder.status, status);
+
+    if (!transition.ok) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: transition.error });
+    }
+
+    if (transition.idempotent) {
+      await client.query("ROLLBACK");
+      const fullOrder = await pool.query("SELECT * FROM orders WHERE id = $1", [orderId]);
+      return res.json({
+        message: "Order status unchanged.",
+        order: fullOrder.rows[0],
+      });
+    }
 
     // Restock only on the transition into cancelled, and only once ever
     // for this order — reverting to another status and cancelling again
@@ -943,15 +1090,14 @@ router.patch("/:id/status", authMiddleware, adminOnly, async (req, res) => {
 
     let order = updateResult.rows[0];
 
-    // Log the transition for the admin-facing status timeline. Skip if the
-    // status didn't actually change (e.g. re-selecting the same value).
-    if (currentOrder.status !== status) {
-      await client.query(
-        `INSERT INTO order_status_history (order_id, old_status, new_status)
-         VALUES ($1, $2, $3)`,
-        [orderId, currentOrder.status, status]
-      );
-    }
+    // Log the transition for the status timeline. The idempotent
+    // same-status case already returned above, so this is always a real
+    // transition — exactly one history row per call.
+    await client.query(
+      `INSERT INTO order_status_history (order_id, old_status, new_status, changed_by)
+       VALUES ($1, $2, $3, $4)`,
+      [orderId, currentOrder.status, status, req.user.id]
+    );
 
     if (needsRestock) {
       for (const [productId, restoredQuantity] of quantityByProduct.entries()) {
@@ -1025,5 +1171,195 @@ router.patch("/:id/admin-notes", authMiddleware, adminOnly, async (req, res) => 
     res.status(500).json({ error: "Failed to update admin notes." });
   }
 });
+
+/* ─────────────────────────────────────────────
+   Task M1: Private Owner Notes — a richer, multi-entry note system on
+   order_admin_notes, additive alongside the older single-field
+   orders.admin_notes column/endpoint above (left untouched). Admin-only;
+   customers never receive these in any response.
+───────────────────────────────────────────── */
+const MAX_NOTE_LENGTH = 2000;
+
+function serializeAdminNote(row) {
+  return {
+    id: row.id,
+    order_id: row.order_id,
+    note_text: row.note_text,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    admin_user_id: row.admin_user_id,
+    admin_email: row.admin_email || null,
+  };
+}
+
+// GET /api/orders/:orderId/admin-notes — newest first.
+router.get(
+  "/:orderId/admin-notes",
+  authMiddleware,
+  adminOnly,
+  async (req, res) => {
+    const orderId = parseInt(req.params.orderId);
+
+    try {
+      const orderCheck = await pool.query("SELECT id FROM orders WHERE id = $1", [
+        orderId,
+      ]);
+      if (orderCheck.rows.length === 0) {
+        return res.status(404).json({ error: "Order not found." });
+      }
+
+      const result = await pool.query(
+        `
+        SELECT n.*, u.email AS admin_email
+        FROM order_admin_notes n
+        LEFT JOIN users u ON u.id = n.admin_user_id
+        WHERE n.order_id = $1
+        ORDER BY n.created_at DESC
+        `,
+        [orderId]
+      );
+
+      res.json({ notes: result.rows.map(serializeAdminNote) });
+    } catch (err) {
+      console.error("Fetch admin notes error:", err);
+      res.status(500).json({ error: "Failed to fetch admin notes." });
+    }
+  }
+);
+
+// POST /api/orders/:orderId/admin-notes — Body: { note_text }
+router.post(
+  "/:orderId/admin-notes",
+  authMiddleware,
+  adminOnly,
+  async (req, res) => {
+    const orderId = parseInt(req.params.orderId);
+    const noteText = typeof req.body.note_text === "string" ? req.body.note_text.trim() : "";
+
+    if (!noteText) {
+      return res.status(400).json({ error: "Note text is required." });
+    }
+    if (noteText.length > MAX_NOTE_LENGTH) {
+      return res.status(400).json({
+        error: `Note text must be ${MAX_NOTE_LENGTH} characters or fewer.`,
+      });
+    }
+
+    try {
+      const orderCheck = await pool.query("SELECT id FROM orders WHERE id = $1", [
+        orderId,
+      ]);
+      if (orderCheck.rows.length === 0) {
+        return res.status(404).json({ error: "Order not found." });
+      }
+
+      const insertResult = await pool.query(
+        `INSERT INTO order_admin_notes (order_id, admin_user_id, note_text)
+         VALUES ($1, $2, $3) RETURNING *`,
+        [orderId, req.user.id, noteText]
+      );
+
+      const withEmail = await pool.query(
+        `SELECT n.*, u.email AS admin_email
+         FROM order_admin_notes n
+         LEFT JOIN users u ON u.id = n.admin_user_id
+         WHERE n.id = $1`,
+        [insertResult.rows[0].id]
+      );
+
+      res.status(201).json({
+        message: "Note added.",
+        note: serializeAdminNote(withEmail.rows[0]),
+      });
+    } catch (err) {
+      console.error("Create admin note error:", err);
+      res.status(500).json({ error: "Failed to add admin note." });
+    }
+  }
+);
+
+// PATCH /api/orders/:orderId/admin-notes/:noteId — Body: { note_text }
+router.patch(
+  "/:orderId/admin-notes/:noteId",
+  authMiddleware,
+  adminOnly,
+  async (req, res) => {
+    const orderId = parseInt(req.params.orderId);
+    const noteId = parseInt(req.params.noteId);
+    const noteText = typeof req.body.note_text === "string" ? req.body.note_text.trim() : "";
+
+    if (!noteText) {
+      return res.status(400).json({ error: "Note text is required." });
+    }
+    if (noteText.length > MAX_NOTE_LENGTH) {
+      return res.status(400).json({
+        error: `Note text must be ${MAX_NOTE_LENGTH} characters or fewer.`,
+      });
+    }
+
+    try {
+      // Verify the note actually belongs to this order before touching it.
+      const existing = await pool.query(
+        "SELECT id, order_id FROM order_admin_notes WHERE id = $1",
+        [noteId]
+      );
+      if (existing.rows.length === 0 || existing.rows[0].order_id !== orderId) {
+        return res.status(404).json({ error: "Note not found for this order." });
+      }
+
+      const updateResult = await pool.query(
+        `UPDATE order_admin_notes
+         SET note_text = $1, updated_at = now()
+         WHERE id = $2
+         RETURNING *`,
+        [noteText, noteId]
+      );
+
+      const withEmail = await pool.query(
+        `SELECT n.*, u.email AS admin_email
+         FROM order_admin_notes n
+         LEFT JOIN users u ON u.id = n.admin_user_id
+         WHERE n.id = $1`,
+        [updateResult.rows[0].id]
+      );
+
+      res.json({
+        message: "Note updated.",
+        note: serializeAdminNote(withEmail.rows[0]),
+      });
+    } catch (err) {
+      console.error("Update admin note error:", err);
+      res.status(500).json({ error: "Failed to update admin note." });
+    }
+  }
+);
+
+// DELETE /api/orders/:orderId/admin-notes/:noteId
+router.delete(
+  "/:orderId/admin-notes/:noteId",
+  authMiddleware,
+  adminOnly,
+  async (req, res) => {
+    const orderId = parseInt(req.params.orderId);
+    const noteId = parseInt(req.params.noteId);
+
+    try {
+      const existing = await pool.query(
+        "SELECT id, order_id FROM order_admin_notes WHERE id = $1",
+        [noteId]
+      );
+      if (existing.rows.length === 0 || existing.rows[0].order_id !== orderId) {
+        return res.status(404).json({ error: "Note not found for this order." });
+      }
+
+      await pool.query("DELETE FROM order_admin_notes WHERE id = $1", [noteId]);
+
+      res.json({ message: "Note deleted." });
+    } catch (err) {
+      console.error("Delete admin note error:", err);
+      res.status(500).json({ error: "Failed to delete admin note." });
+    }
+  }
+);
 
 module.exports = router;

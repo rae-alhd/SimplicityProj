@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import AdminNav from "../components/AdminNav";
 import API_BASE from "../config/api";
+import { statusLabel } from "../utils/orderStatus";
 
 function Dashboard({ user, setUser }) {
   const navigate = useNavigate();
@@ -85,7 +86,9 @@ function Dashboard({ user, setUser }) {
   const stats = useMemo(() => {
     const activeProducts = products.filter((p) => p.is_active !== false).length;
     const customizableProducts = products.filter((p) => p.is_customizable).length;
-    const pendingOrders = orders.filter((o) => o.status === "pending").length;
+    // Task M1: "pending" was renamed to "new" in the production workflow
+    // migration — this stat now counts orders that haven't been touched yet.
+    const newOrders = orders.filter((o) => o.status === "new").length;
     const deliveredOrders = orders.filter((o) => o.status === "delivered").length;
 
     return {
@@ -93,7 +96,7 @@ function Dashboard({ user, setUser }) {
       activeProducts,
       customizableProducts,
       totalOrders: orders.length,
-      pendingOrders,
+      newOrders,
       deliveredOrders,
     };
   }, [products, orders]);
@@ -214,7 +217,7 @@ function Dashboard({ user, setUser }) {
           <StatCard label="Total Products" value={stats.totalProducts} />
           <StatCard label="Active Products" value={stats.activeProducts} />
           <StatCard label="Customizable" value={stats.customizableProducts} />
-          <StatCard label="Pending Orders" value={stats.pendingOrders} />
+          <StatCard label="New Orders" value={stats.newOrders} />
         </section>
 
         <section style={styles.formPanel}>
@@ -396,7 +399,7 @@ function Dashboard({ user, setUser }) {
                     <div>
                       <strong>Order #{String(order.id).padStart(5, "0")}</strong>
                       <p style={styles.productMeta}>
-                        {order.customer_name || "Customer"} · {order.status}
+                        {order.customer_name || "Customer"} · {statusLabel(order.status)}
                       </p>
                     </div>
                     <strong>

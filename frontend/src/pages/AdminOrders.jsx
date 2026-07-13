@@ -1,16 +1,13 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import AdminNav from "../components/AdminNav";
 import API_BASE from "../config/api";
-
-const STATUS_OPTIONS = ["pending", "confirmed", "delivered", "cancelled"];
-
-const STATUS_STYLES = {
-  pending:   { background: "#fff8ec", color: "#b07d2a", border: "1px solid #f0d9a0" },
-  confirmed: { background: "#edf6ff", color: "#1a6fb5", border: "1px solid #b3d4f5" },
-  delivered: { background: "#edfbf3", color: "#1a7a45", border: "1px solid #a3dfc0" },
-  cancelled: { background: "#fdf2f2", color: "#b52a2a", border: "1px solid #f0b3b3" },
-};
+import {
+  ALL_STATUSES,
+  getStatusActions,
+  getStatusBadgeStyle,
+  statusLabel,
+} from "../utils/orderStatus";
 
 // Matches order id (plain or "#123" style), customer name/email/phone, and
 // any item's product name — all case-insensitive substring matches.
@@ -33,11 +30,6 @@ function orderMatchesSearch(order, normalizedTerm) {
   );
 }
 
-function capitalizeStatus(status) {
-  if (!status) return "—";
-  return status.charAt(0).toUpperCase() + status.slice(1);
-}
-
 function formatTimelineDate(dateString) {
   if (!dateString) return "—";
   return new Date(dateString).toLocaleString("tr-TR", {
@@ -49,35 +41,241 @@ function formatTimelineDate(dateString) {
   });
 }
 
-function OrderCard({
-  order,
-  onStatusChange,
-  productImageMap,
-  noteDraft,
-  onNoteDraftChange,
-  onSaveNote,
-  savingNote,
-}) {
-  const [status, setStatus]     = useState(order.status || "pending");
-  const [saving, setSaving]     = useState(false);
-  const [saveError, setSaveError] = useState("");
+function StatusBadge({ status }) {
+  const cfg = getStatusBadgeStyle(status);
+  return (
+    <span
+      style={{
+        ...s.statusPill,
+        background: cfg.background,
+        color: cfg.color,
+        border: `1px solid ${cfg.border}`,
+      }}
+    >
+      <span style={{ ...s.statusDot, background: cfg.dot }} />
+      {statusLabel(status)}
+    </span>
+  );
+}
+
+/* ─────────────────────────────────────────────
+   Private Owner Notes — Task M1. Fetched lazily the first time a card is
+   expanded. Newest first; add/edit/delete; never visible to customers
+   (admin-only endpoints, admin-only UI).
+───────────────────────────────────────────── */
+function NotesSection({ orderId, token }) {
+  const [notes, setNotes] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [draft, setDraft] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [savingId, setSavingId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+
+  const authHeaders = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
+  };
+
+  const loadNotes = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/orders/${orderId}/admin-notes`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load notes.");
+      setNotes(Array.isArray(data.notes) ? data.notes : []);
+      setLoaded(true);
+    } catch (err) {
+      setLoadError(err.message);
+      setLoaded(true);
+    }
+  }, [orderId, token]);
+
+  useEffect(() => {
+    if (!loaded) loadNotes();
+  }, [loaded, loadNotes]);
+
+  const handleAdd = async () => {
+    const noteText = draft.trim();
+    if (!noteText) return;
+    setAdding(true);
+    setAddError("");
+    try {
+      const res = await fetch(`${API_BASE}/orders/${orderId}/admin-notes`, {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({ note_text: noteText }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to add note.");
+      setNotes((prev) => [data.note, ...prev]);
+      setDraft("");
+    } catch (err) {
+      setAddError(err.message);
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const startEdit = (note) => {
+    setEditingId(note.id);
+    setEditDraft(note.note_text);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditDraft("");
+  };
+
+  const handleSaveEdit = async (noteId) => {
+    const noteText = editDraft.trim();
+    if (!noteText) return;
+    setSavingId(noteId);
+    try {
+      const res = await fetch(`${API_BASE}/orders/${orderId}/admin-notes/${noteId}`, {
+        method: "PATCH",
+        headers: authHeaders,
+        body: JSON.stringify({ note_text: noteText }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update note.");
+      setNotes((prev) => prev.map((n) => (n.id === noteId ? data.note : n)));
+      setEditingId(null);
+      setEditDraft("");
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const handleDelete = async (noteId) => {
+    if (!window.confirm("Delete this note? This cannot be undone.")) return;
+    setDeletingId(noteId);
+    try {
+      const res = await fetch(`${API_BASE}/orders/${orderId}/admin-notes/${noteId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to delete note.");
+      setNotes((prev) => prev.filter((n) => n.id !== noteId));
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  return (
+    <div style={s.notesSection}>
+      <div style={s.notesSectionHeader}>
+        <span style={s.infoLabel}>Private Owner Notes</span>
+        <span style={s.notesPrivacyNote}>Customers cannot see these notes.</span>
+      </div>
+
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        placeholder="Add an internal note about this order..."
+        maxLength={2000}
+        style={s.adminNotesTextarea}
+      />
+      <div style={s.notesAddRow}>
+        <button
+          onClick={handleAdd}
+          disabled={adding || !draft.trim()}
+          style={{
+            ...s.saveNoteBtn,
+            ...(adding || !draft.trim() ? s.saveNoteBtnDisabled : {}),
+          }}
+        >
+          {adding ? "Adding..." : "Add Note"}
+        </button>
+        {addError && <span style={s.saveErrorText}>{addError}</span>}
+      </div>
+
+      {loadError && <p style={s.saveErrorText}>{loadError}</p>}
+
+      {loaded && notes.length === 0 && !loadError && (
+        <p style={s.timelineEmpty}>No private notes yet.</p>
+      )}
+
+      <div style={s.notesList}>
+        {notes.map((note) => (
+          <div key={note.id} style={s.noteCard}>
+            {editingId === note.id ? (
+              <>
+                <textarea
+                  value={editDraft}
+                  onChange={(e) => setEditDraft(e.target.value)}
+                  maxLength={2000}
+                  style={s.adminNotesTextarea}
+                />
+                <div style={s.noteEditActions}>
+                  <button
+                    onClick={() => handleSaveEdit(note.id)}
+                    disabled={savingId === note.id || !editDraft.trim()}
+                    style={s.saveNoteBtn}
+                  >
+                    {savingId === note.id ? "Saving..." : "Save"}
+                  </button>
+                  <button onClick={cancelEdit} style={s.noteCancelBtn}>
+                    Cancel
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p style={s.noteText}>{note.note_text}</p>
+                <div style={s.noteMeta}>
+                  <span>
+                    {note.admin_email || "Legacy note"} · {formatTimelineDate(note.updated_at)}
+                    {note.updated_at !== note.created_at ? " (edited)" : ""}
+                  </span>
+                  <span style={s.noteActions}>
+                    <button onClick={() => startEdit(note)} style={s.noteLinkBtn}>
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => handleDelete(note.id)}
+                      disabled={deletingId === note.id}
+                      style={{ ...s.noteLinkBtn, color: "#b52a2a" }}
+                    >
+                      {deletingId === note.id ? "Deleting..." : "Delete"}
+                    </button>
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function OrderCard({ order, onOrderUpdated, productImageMap, token }) {
   const [expanded, setExpanded] = useState(false);
-  const token = localStorage.getItem("token");
+  const [savingStatus, setSavingStatus] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [successMessage, setSuccessMessage] = useState("");
 
-  const handleStatusChange = async (e) => {
-    const newStatus = e.target.value;
-
-    if (newStatus === "cancelled") {
+  const handleStatusAction = async (nextStatus, actionLabel) => {
+    if (nextStatus === "cancelled") {
       const confirmed = window.confirm(
-        "Cancel this order? Product stock will be restored if it has not been restored already."
+        "Cancel this order? Any General or Variant stock deducted at checkout will be restored automatically. This cannot be undone."
       );
-      if (!confirmed) {
-        return;
-      }
+      if (!confirmed) return;
     }
 
-    setSaving(true);
+    setSavingStatus(true);
     setSaveError("");
+    setSuccessMessage("");
     try {
       const res = await fetch(`${API_BASE}/orders/${order.id}/status`, {
         method: "PATCH",
@@ -85,18 +283,18 @@ function OrderCard({
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ status: newStatus }),
+        body: JSON.stringify({ status: nextStatus }),
       });
+      const data = await res.json();
       if (!res.ok) {
-        const d = await res.json();
-        throw new Error(d.error || d.message || "Failed to update status.");
+        throw new Error(data.error || data.message || "Failed to update status.");
       }
-      setStatus(newStatus);
-      onStatusChange(order.id, newStatus);
+      setSuccessMessage(`${actionLabel} — done.`);
+      await onOrderUpdated();
     } catch (err) {
       setSaveError(err.message);
     } finally {
-      setSaving(false);
+      setSavingStatus(false);
     }
   };
 
@@ -111,24 +309,24 @@ function OrderCard({
     : "—";
 
   const items = Array.isArray(order.items) ? order.items : [];
-  const statusHistory = Array.isArray(order.status_history)
-    ? order.status_history
-    : [];
+  const statusHistory = Array.isArray(order.status_history) ? order.status_history : [];
+  const itemCount = order.item_count ?? items.reduce((n, i) => n + Number(i.quantity || 0), 0);
+  const isCustomized = order.contains_customized_items ?? items.some((i) => i.is_customized);
+  const actions = getStatusActions(order.status);
 
   return (
     <div style={s.card}>
       {/* ── Card Header ── */}
-      <div style={s.cardHeader}>
+      <div style={s.cardHeader} className="ao-card-header">
         <div style={s.cardHeaderLeft}>
           <span style={s.orderId}>#{String(order.id).padStart(5, "0")}</span>
           <span style={s.dateTag}>{formattedDate}</span>
           {order.is_gift && <span style={s.giftBadge}>🎁 Gift order</span>}
+          {isCustomized && <span style={s.customizedBadge}>✎ Customized</span>}
         </div>
         <div style={s.cardHeaderRight}>
-          <span style={{ ...s.statusPill, ...STATUS_STYLES[status] }}>
-            {status.charAt(0).toUpperCase() + status.slice(1)}
-          </span>
-          {status === "cancelled" && (
+          <StatusBadge status={order.status} />
+          {order.status === "cancelled" && (
             <span
               style={{
                 ...s.stockBadge,
@@ -141,217 +339,210 @@ function OrderCard({
         </div>
       </div>
 
-      {/* ── Customer Info Grid ── */}
-      <div style={s.infoGrid}>
+      {/* ── Summary Row (always visible) ── */}
+      <div style={s.infoGrid} className="ao-info-grid">
         <InfoBlock label="Customer" value={order.customer_name || "—"} />
-        <InfoBlock label="Email"    value={order.user_email   || "—"} />
-        <InfoBlock label="Phone"    value={order.phone        || "—"} />
-        <InfoBlock label="Total"    value={totalDisplay} highlight />
+        <InfoBlock label="Email" value={order.user_email || "—"} />
+        <InfoBlock label="Total" value={totalDisplay} highlight />
+        <InfoBlock label="Items" value={`${itemCount} piece${itemCount !== 1 ? "s" : ""}`} />
       </div>
 
-      <div style={s.addressRow}>
-        <span style={s.infoLabel}>Address</span>
-        <span style={s.addressValue}>{order.address || "—"}</span>
-      </div>
+      <button style={s.toggleBtn} onClick={() => setExpanded((p) => !p)}>
+        <span style={s.toggleLabel}>
+          {expanded ? "▲ Hide" : "▼ Show"} order details
+        </span>
+      </button>
 
-      {order.notes && (
-        <div style={s.notesRow}>
-          <span style={s.infoLabel}>Notes</span>
-          <span style={s.notesValue}>{order.notes}</span>
-        </div>
-      )}
+      {expanded && (
+        <div style={s.detailsWrap}>
+          <div style={s.infoGrid} className="ao-info-grid">
+            <InfoBlock label="Phone" value={order.phone || "—"} />
+            <InfoBlock label="Gift order" value={order.is_gift ? "Yes" : "No"} />
+          </div>
 
-      {/* ── Admin Notes (Internal) ── */}
-      <div style={s.adminNotesSection}>
-        <label style={s.infoLabel} htmlFor={`admin-notes-${order.id}`}>
-          Admin Notes (Internal)
-        </label>
-        <textarea
-          id={`admin-notes-${order.id}`}
-          value={noteDraft}
-          onChange={(e) => onNoteDraftChange(order.id, e.target.value)}
-          placeholder="Internal notes for this order (not visible to the customer)..."
-          style={s.adminNotesTextarea}
-        />
-        <button
-          onClick={() => onSaveNote(order.id)}
-          disabled={savingNote}
-          style={{
-            ...s.saveNoteBtn,
-            ...(savingNote ? s.saveNoteBtnDisabled : {}),
-          }}
-        >
-          {savingNote ? "Saving..." : "Save Note"}
-        </button>
-      </div>
+          <div style={s.addressRow}>
+            <span style={s.infoLabel}>Shipping Address</span>
+            <span style={s.addressValue}>{order.address || "—"}</span>
+          </div>
 
-      {/* ── Status Timeline ── */}
-      <div style={s.timelineSection}>
-        <span style={s.infoLabel}>Status Timeline</span>
-        <div style={s.timelineList}>
-          <div style={s.timelineRow}>
-            <span style={s.timelineDot} />
-            <div style={s.timelineContent}>
-              <span style={s.timelineText}>Order placed — Pending</span>
-              <span style={s.timelineDate}>
-                {formatTimelineDate(order.created_at)}
-              </span>
+          {order.notes && (
+            <div style={s.notesRow}>
+              <span style={s.infoLabel}>Customer Note</span>
+              <span style={s.notesValue}>{order.notes}</span>
+            </div>
+          )}
+
+          {/* ── Items ── */}
+          {items.length > 0 && (
+            <div style={s.itemsSection}>
+              <span style={s.infoLabel}>Ordered Items</span>
+              <div style={s.itemsTable}>
+                <div style={s.itemsTableHeader} className="ao-items-row">
+                  <span>Product</span>
+                  <span>Size</span>
+                  <span>Color</span>
+                  <span style={{ textAlign: "right" }}>Qty</span>
+                  <span style={{ textAlign: "right" }}>Unit Price</span>
+                  <span style={{ textAlign: "right" }}>Subtotal</span>
+                </div>
+                {items.map((item, idx) => {
+                  const productImage = productImageMap?.[item.product_id];
+
+                  return (
+                    <div
+                      key={idx}
+                      className="ao-items-row"
+                      style={{ ...s.itemRow, ...(idx % 2 === 0 ? s.itemRowAlt : {}) }}
+                    >
+                      <div style={s.itemProductCell}>
+                        <div style={s.itemThumbWrap}>
+                          {productImage ? (
+                            <img src={productImage} alt={item.product_name || "Product"} style={s.itemThumb} />
+                          ) : (
+                            <span style={s.itemThumbPlaceholder}>No Image</span>
+                          )}
+                        </div>
+
+                        <div>
+                          <span style={s.itemName}>{item.product_name || "—"}</span>
+
+                          {item.is_customized && (
+                            <div style={s.customDetails}>
+                              <span style={s.customBadge}>Customized</span>
+
+                              {item.customization_label && (
+                                <div>
+                                  <strong>Placement:</strong> {item.customization_label}
+                                </div>
+                              )}
+                              {item.custom_text && (
+                                <div>
+                                  <strong>Text:</strong> {item.custom_text}
+                                </div>
+                              )}
+                              {item.custom_note && (
+                                <div>
+                                  <strong>Note:</strong> {item.custom_note}
+                                </div>
+                              )}
+
+                              {item.design_label && (
+                                <div style={s.designBox}>
+                                  <div style={s.designBoxText}>
+                                    {item.collection_name && (
+                                      <div>
+                                        <strong>Collection:</strong> {item.collection_name}
+                                      </div>
+                                    )}
+                                    <div>
+                                      <strong>Design:</strong> {item.design_label}
+                                      {item.design_color_name ? ` — ${item.design_color_name}` : ""}
+                                    </div>
+                                  </div>
+                                  {(item.design_preview_image_url || item.design_image_url) && (
+                                    <img
+                                      src={item.design_preview_image_url || item.design_image_url}
+                                      alt={item.design_label}
+                                      style={s.designThumb}
+                                    />
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Task L1: item.size is always null for a STANDARD order
+                          line — its permanent standard_size_label_snapshot is
+                          shown instead. */}
+                      <span style={s.itemCell}>
+                        {item.size || item.standard_size_label_snapshot || "—"}
+                      </span>
+                      <span style={s.itemCell}>{item.color || "—"}</span>
+                      <span style={{ ...s.itemCell, textAlign: "right" }}>{item.quantity}</span>
+                      <span style={{ ...s.itemCell, textAlign: "right" }}>
+                        ₺{Number(item.unit_price || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2 })}
+                      </span>
+                      <span style={{ ...s.itemCell, textAlign: "right", fontWeight: "500" }}>
+                        ₺{(Number(item.unit_price || 0) * item.quantity).toLocaleString("tr-TR", { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* ── Status Timeline ── */}
+          <div style={s.timelineSection}>
+            <span style={s.infoLabel}>Status Timeline</span>
+            <div style={s.timelineList}>
+              <div style={s.timelineRow}>
+                <span style={s.timelineDot} />
+                <div style={s.timelineContent}>
+                  <span style={s.timelineText}>Order placed — New</span>
+                  <span style={s.timelineDate}>{formatTimelineDate(order.created_at)}</span>
+                </div>
+              </div>
+
+              {statusHistory.length === 0 ? (
+                <p style={s.timelineEmpty}>No status changes yet.</p>
+              ) : (
+                statusHistory.map((entry) => (
+                  <div key={entry.id} style={s.timelineRow}>
+                    <span style={s.timelineDot} />
+                    <div style={s.timelineContent}>
+                      <span style={s.timelineText}>
+                        {statusLabel(entry.old_status)} → {statusLabel(entry.new_status)}
+                      </span>
+                      <span style={s.timelineDate}>
+                        {formatTimelineDate(entry.created_at)}
+                        {entry.changed_by_email ? ` · ${entry.changed_by_email}` : ""}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
 
-          {statusHistory.length === 0 ? (
-            <p style={s.timelineEmpty}>No status changes yet.</p>
-          ) : (
-            statusHistory.map((entry) => (
-              <div key={entry.id} style={s.timelineRow}>
-                <span style={s.timelineDot} />
-                <div style={s.timelineContent}>
-                  <span style={s.timelineText}>
-                    {capitalizeStatus(entry.old_status)} →{" "}
-                    {capitalizeStatus(entry.new_status)}
-                  </span>
-                  <span style={s.timelineDate}>
-                    {formatTimelineDate(entry.created_at)}
-                  </span>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-
-      {/* ── Items Toggle ── */}
-      {items.length > 0 && (
-        <div style={s.itemsSection}>
-          <button style={s.toggleBtn} onClick={() => setExpanded((p) => !p)}>
-            <span style={s.toggleLabel}>
-              {expanded ? "▲ Hide" : "▼ Show"} items ({items.length})
-            </span>
-          </button>
-
-          {expanded && (
-            <div style={s.itemsTable}>
-              <div style={s.itemsTableHeader}>
-                <span>Product</span>
-                <span>Size</span>
-                <span>Color</span>
-                <span style={{ textAlign: "right" }}>Qty</span>
-                <span style={{ textAlign: "right" }}>Unit Price</span>
-                <span style={{ textAlign: "right" }}>Subtotal</span>
-              </div>
-              {items.map((item, idx) => {
-                const productImage = productImageMap?.[item.product_id];
-
-                return (
-  <div key={idx} style={{ ...s.itemRow, ...(idx % 2 === 0 ? s.itemRowAlt : {}) }}>
-    <div style={s.itemProductCell}>
-      <div style={s.itemThumbWrap}>
-        {productImage ? (
-          <img
-            src={productImage}
-            alt={item.product_name || "Product"}
-            style={s.itemThumb}
-          />
-        ) : (
-          <span style={s.itemThumbPlaceholder}>No Image</span>
-        )}
-      </div>
-
-      <div>
-      <span style={s.itemName}>{item.product_name || "—"}</span>
-
-      {item.is_customized && (
-        <div style={s.customDetails}>
-          <span style={s.customBadge}>Customized</span>
-
-          {item.customization_label && (
-            <div>
-              <strong>Placement:</strong> {item.customization_label}
-            </div>
-          )}
-
-          {item.custom_text && (
-            <div>
-              <strong>Text:</strong> {item.custom_text}
-            </div>
-          )}
-
-          {item.custom_note && (
-            <div>
-              <strong>Note:</strong> {item.custom_note}
-            </div>
-          )}
-
-          {item.design_label && (
-            <div style={s.designBox}>
-              <div style={s.designBoxText}>
-                {item.collection_name && (
-                  <div>
-                    <strong>Collection:</strong> {item.collection_name}
-                  </div>
-                )}
-                <div>
-                  <strong>Design:</strong> {item.design_label}
-                  {item.design_color_name ? ` — ${item.design_color_name}` : ""}
-                </div>
-              </div>
-
-              {(item.design_preview_image_url || item.design_image_url) && (
-                <img
-                  src={item.design_preview_image_url || item.design_image_url}
-                  alt={item.design_label}
-                  style={s.designThumb}
-                />
-              )}
-            </div>
-          )}
-        </div>
-      )}
-      </div>
-    </div>
-
-    {/* Task L1: item.size is always null for a STANDARD order line — its
-        permanent standard_size_label_snapshot is shown instead. */}
-    <span style={s.itemCell}>
-      {item.size || item.standard_size_label_snapshot || "—"}
-    </span>
-    <span style={s.itemCell}>{item.color || "—"}</span>
-    <span style={{ ...s.itemCell, textAlign: "right" }}>{item.quantity}</span>
-    <span style={{ ...s.itemCell, textAlign: "right" }}>
-      ₺{Number(item.unit_price || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2 })}
-    </span>
-    <span style={{ ...s.itemCell, textAlign: "right", fontWeight: "500" }}>
-      ₺{(Number(item.unit_price || 0) * item.quantity).toLocaleString("tr-TR", { minimumFractionDigits: 2 })}
-    </span>
-  </div>
-                );
-              })}
-            </div>
-          )}
+          {/* ── Private Owner Notes ── */}
+          {expanded && <NotesSection orderId={order.id} token={token} />}
         </div>
       )}
 
-      {/* ── Status Control ── */}
+      {/* ── Status Control (always visible, so the owner can act without expanding) ── */}
       <div style={s.cardFooter}>
         <div style={s.statusControl}>
-          <label style={s.selectLabel} htmlFor={`status-${order.id}`}>
-            Update Status
-          </label>
-          <select
-            id={`status-${order.id}`}
-            value={status}
-            onChange={handleStatusChange}
-            disabled={saving}
-            style={{ ...s.select, ...(saving ? s.selectDisabled : {}) }}
-          >
-            {STATUS_OPTIONS.map((opt) => (
-              <option key={opt} value={opt}>
-                {opt.charAt(0).toUpperCase() + opt.slice(1)}
-              </option>
+          <span style={s.selectLabel}>Update Status</span>
+          <div style={s.actionButtonsRow}>
+            {actions.length === 0 && (
+              <span style={s.finalStatusNote}>
+                {order.status === "delivered" ? "Delivered — final status, no actions." : "Cancelled — final status, no actions."}
+              </span>
+            )}
+            {actions.map((action) => (
+              <button
+                key={action.to}
+                onClick={() => handleStatusAction(action.to, action.label)}
+                disabled={savingStatus}
+                style={{
+                  ...s.actionBtn,
+                  ...(action.kind === "primary" ? s.actionBtnPrimary : {}),
+                  ...(action.kind === "danger" ? s.actionBtnDanger : {}),
+                  ...(savingStatus ? s.actionBtnDisabled : {}),
+                }}
+              >
+                {action.label}
+              </button>
             ))}
-          </select>
-          {saving && <span style={s.savingText}>Saving…</span>}
+          </div>
+          {savingStatus && <span style={s.savingText}>Saving…</span>}
           {saveError && <span style={s.saveErrorText}>{saveError}</span>}
+          {successMessage && !saveError && (
+            <span style={s.successText}>{successMessage}</span>
+          )}
         </div>
       </div>
     </div>
@@ -369,40 +560,44 @@ function InfoBlock({ label, value, highlight }) {
   );
 }
 
+const EMPTY_FILTERS = {
+  status: "all",
+  search: "",
+  gift: "all",
+  customized: "all",
+  dateFrom: "",
+  dateTo: "",
+};
+
 export default function AdminOrders() {
-  const [orders, setOrders]   = useState([]);
+  const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState("");
-  const [filter, setFilter]   = useState("all");
-  const [searchTerm, setSearchTerm] = useState("");
+  const [error, setError] = useState("");
+  const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [productImageMap, setProductImageMap] = useState({});
-  const [adminNoteDrafts, setAdminNoteDrafts] = useState({});
-  const [savingNoteId, setSavingNoteId] = useState(null);
-  const navigate              = useNavigate();
-  const token                 = localStorage.getItem("token");
+  const navigate = useNavigate();
+  const token = localStorage.getItem("token");
+
+  const fetchOrders = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_BASE}/orders`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("Failed to fetch orders.");
+      const data = await res.json();
+      setOrders(Array.isArray(data) ? data : data.orders || []);
+      setLoading(false);
+    } catch (err) {
+      setError(err.message);
+      setLoading(false);
+    }
+  }, [token]);
 
   useEffect(() => {
     if (!token) { navigate("/login"); return; }
-    fetch(`${API_BASE}/orders`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((r) => {
-        if (!r.ok) throw new Error("Failed to fetch orders.");
-        return r.json();
-      })
-      .then((data) => {
-        const list = Array.isArray(data) ? data : data.orders || [];
-        setOrders(list);
-        setAdminNoteDrafts(
-          list.reduce((acc, o) => {
-            acc[o.id] = o.admin_notes || "";
-            return acc;
-          }, {})
-        );
-        setLoading(false);
-      })
-      .catch((err) => { setError(err.message); setLoading(false); });
-  }, [token, navigate]);
+    fetchOrders();
+  }, [token, navigate, fetchOrders]);
 
   // Demo/frontend-only lookup: resolves each order item's *current* product
   // image by product_id. order_items has no image snapshot, so this can show
@@ -421,158 +616,203 @@ export default function AdminOrders() {
       .catch((err) => console.error("Fetch products error:", err));
   }, []);
 
-  const handleStatusChange = (id, newStatus) => {
-    setOrders((prev) =>
-      prev.map((o) => (o.id === id ? { ...o, status: newStatus } : o))
-    );
-  };
+  const setFilter = (key, value) => setFilters((prev) => ({ ...prev, [key]: value }));
+  const resetFilters = () => setFilters(EMPTY_FILTERS);
 
-  const handleNoteDraftChange = (orderId, value) => {
-    setAdminNoteDrafts((prev) => ({ ...prev, [orderId]: value }));
-  };
+  const filtered = useMemo(() => {
+    let list = orders;
 
-  const handleSaveNote = async (orderId) => {
-    try {
-      setSavingNoteId(orderId);
-
-      const res = await fetch(
-        `${API_BASE}/orders/${orderId}/admin-notes`,
-        {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ admin_notes: adminNoteDrafts[orderId] ?? "" }),
-        }
-      );
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        alert(data.error || "Could not save admin notes.");
-        return;
-      }
-
-      const savedNotes = data.order?.admin_notes ?? "";
-
-      setOrders((prev) =>
-        prev.map((o) =>
-          o.id === orderId ? { ...o, admin_notes: savedNotes } : o
-        )
-      );
-      setAdminNoteDrafts((prev) => ({ ...prev, [orderId]: savedNotes }));
-    } catch (err) {
-      console.error("Save admin notes error:", err);
-      alert("Something went wrong while saving admin notes.");
-    } finally {
-      setSavingNoteId(null);
+    if (filters.status !== "all") {
+      list = list.filter((o) => o.status === filters.status);
     }
-  };
+    if (filters.gift !== "all") {
+      list = list.filter((o) => Boolean(o.is_gift) === (filters.gift === "true"));
+    }
+    if (filters.customized !== "all") {
+      list = list.filter((o) => {
+        const flag = o.contains_customized_items ??
+          (Array.isArray(o.items) && o.items.some((i) => i.is_customized));
+        return Boolean(flag) === (filters.customized === "true");
+      });
+    }
+    if (filters.dateFrom) {
+      const from = new Date(filters.dateFrom);
+      list = list.filter((o) => new Date(o.created_at) >= from);
+    }
+    if (filters.dateTo) {
+      const to = new Date(filters.dateTo);
+      to.setHours(23, 59, 59, 999);
+      list = list.filter((o) => new Date(o.created_at) <= to);
+    }
 
-  const statusFiltered = filter === "all"
-    ? orders
-    : orders.filter((o) => o.status === filter);
+    const normalizedSearch = filters.search.trim().toLowerCase();
+    if (normalizedSearch) {
+      list = list.filter((o) => orderMatchesSearch(o, normalizedSearch));
+    }
 
-  const normalizedSearch = searchTerm.trim().toLowerCase();
+    return list;
+  }, [orders, filters]);
 
-  const filtered = normalizedSearch
-    ? statusFiltered.filter((o) => orderMatchesSearch(o, normalizedSearch))
-    : statusFiltered;
+  const counts = useMemo(
+    () =>
+      ALL_STATUSES.reduce((acc, statusKey) => {
+        acc[statusKey] = orders.filter((o) => o.status === statusKey).length;
+        return acc;
+      }, {}),
+    [orders]
+  );
 
-  const counts = STATUS_OPTIONS.reduce((acc, s) => {
-    acc[s] = orders.filter((o) => o.status === s).length;
-    return acc;
-  }, {});
+  const filtersActive =
+    filters.status !== "all" ||
+    filters.search.trim() !== "" ||
+    filters.gift !== "all" ||
+    filters.customized !== "all" ||
+    filters.dateFrom !== "" ||
+    filters.dateTo !== "";
 
   return (
     <>
       <AdminNav />
       <div style={s.page}>
-      <div style={s.container}>
+        <div style={s.container}>
 
-        {/* ── Page Header ── */}
-        <div style={s.pageHeader}>
-          <div>
-            <h1 style={s.pageTitle}>Orders</h1>
-            <p style={s.pageSubtitle}>
-              {orders.length} total order{orders.length !== 1 ? "s" : ""}
-            </p>
+          {/* ── Page Header ── */}
+          <div style={s.pageHeader}>
+            <div>
+              <h1 style={s.pageTitle}>Orders</h1>
+              <p style={s.pageSubtitle}>
+                {orders.length} total order{orders.length !== 1 ? "s" : ""}
+              </p>
+            </div>
           </div>
-        </div>
 
-        {/* ── Stat Chips ── */}
-        <div style={s.statsRow}>
-          <StatChip label="All" count={orders.length} active={filter === "all"}
-            onClick={() => setFilter("all")} color="#1a1a1a" />
-          <StatChip label="Pending"   count={counts.pending}   active={filter === "pending"}
-            onClick={() => setFilter("pending")}   color="#b07d2a" />
-          <StatChip label="Confirmed" count={counts.confirmed} active={filter === "confirmed"}
-            onClick={() => setFilter("confirmed")} color="#1a6fb5" />
-          <StatChip label="Delivered" count={counts.delivered} active={filter === "delivered"}
-            onClick={() => setFilter("delivered")} color="#1a7a45" />
-          <StatChip label="Cancelled" count={counts.cancelled} active={filter === "cancelled"}
-            onClick={() => setFilter("cancelled")} color="#b52a2a" />
-        </div>
+          {/* ── Filters ── */}
+          <div style={s.filtersBar} className="ao-filters-bar">
+            <input
+              type="text"
+              value={filters.search}
+              onChange={(e) => setFilter("search", e.target.value)}
+              placeholder="Search by order, customer, email, phone, product..."
+              style={s.searchInput}
+            />
 
-        {/* ── Search ── */}
-        <div style={s.searchRow}>
-          <input
-            type="text"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Search by order, customer, email, phone, product..."
-            style={s.searchInput}
-          />
-        </div>
+            <div style={s.statsRow}>
+              <StatChip label="All" count={orders.length} active={filters.status === "all"}
+                onClick={() => setFilter("status", "all")} color="#1a1a1a" />
+              {ALL_STATUSES.map((statusKey) => (
+                <StatChip
+                  key={statusKey}
+                  label={statusLabel(statusKey)}
+                  count={counts[statusKey]}
+                  active={filters.status === statusKey}
+                  onClick={() => setFilter("status", statusKey)}
+                  color={getStatusBadgeStyle(statusKey).color}
+                />
+              ))}
+            </div>
 
-        <div style={s.divider} />
-
-        {/* ── States ── */}
-        {loading && (
-          <div style={s.centerState}>
-            <div style={s.spinner} />
-            <p style={s.stateText}>Loading orders…</p>
-          </div>
-        )}
-
-        {error && (
-          <div style={s.errorBox}>
-            <strong>Error:</strong> {error}
-          </div>
-        )}
-
-        {!loading && !error && filtered.length === 0 && (
-          <div style={s.centerState}>
-            <p style={s.emptyIcon}>📋</p>
-            <p style={s.stateText}>
-              {normalizedSearch
-                ? "No orders match your search."
-                : `No ${filter !== "all" ? filter : ""} orders found.`}
-            </p>
-          </div>
-        )}
-
-        {/* ── Order Cards ── */}
-        {!loading && !error && (
-          <div style={s.ordersList}>
-            {filtered.map((order) => (
-              <OrderCard
-                key={order.id}
-                order={order}
-                onStatusChange={handleStatusChange}
-                productImageMap={productImageMap}
-                noteDraft={adminNoteDrafts[order.id] ?? ""}
-                onNoteDraftChange={handleNoteDraftChange}
-                onSaveNote={handleSaveNote}
-                savingNote={savingNoteId === order.id}
+            <div style={s.toggleFiltersRow} className="ao-toggle-filters-row">
+              <ToggleFilter
+                label="Gift Orders"
+                value={filters.gift}
+                onChange={(v) => setFilter("gift", v)}
               />
-            ))}
+              <ToggleFilter
+                label="Customized Orders"
+                value={filters.customized}
+                onChange={(v) => setFilter("customized", v)}
+              />
+
+              <div style={s.dateFilterGroup}>
+                <label style={s.dateLabel}>
+                  From
+                  <input
+                    type="date"
+                    value={filters.dateFrom}
+                    onChange={(e) => setFilter("dateFrom", e.target.value)}
+                    style={s.dateInput}
+                  />
+                </label>
+                <label style={s.dateLabel}>
+                  To
+                  <input
+                    type="date"
+                    value={filters.dateTo}
+                    onChange={(e) => setFilter("dateTo", e.target.value)}
+                    style={s.dateInput}
+                  />
+                </label>
+              </div>
+
+              {filtersActive && (
+                <button onClick={resetFilters} style={s.resetBtn}>
+                  Reset filters
+                </button>
+              )}
+            </div>
           </div>
-        )}
-      </div>
+
+          <div style={s.divider} />
+
+          {/* ── States ── */}
+          {loading && (
+            <div style={s.centerState}>
+              <div style={s.spinner} />
+              <p style={s.stateText}>Loading orders…</p>
+            </div>
+          )}
+
+          {error && (
+            <div style={s.errorBox}>
+              <strong>Error:</strong> {error}
+            </div>
+          )}
+
+          {!loading && !error && filtered.length === 0 && (
+            <div style={s.centerState}>
+              <p style={s.emptyIcon}>📋</p>
+              <p style={s.stateText}>
+                {filtersActive ? "No orders match your filters." : "No orders found."}
+              </p>
+            </div>
+          )}
+
+          {/* ── Order Cards ── */}
+          {!loading && !error && (
+            <div style={s.ordersList}>
+              {filtered.map((order) => (
+                <OrderCard
+                  key={order.id}
+                  order={order}
+                  onOrderUpdated={fetchOrders}
+                  productImageMap={productImageMap}
+                  token={token}
+                />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </>
+  );
+}
+
+function ToggleFilter({ label, value, onChange }) {
+  return (
+    <div style={s.toggleGroup}>
+      <button
+        onClick={() => onChange("all")}
+        style={{ ...s.toggleGroupBtn, ...(value === "all" ? s.toggleGroupBtnActive : {}) }}
+      >
+        All
+      </button>
+      <button
+        onClick={() => onChange("true")}
+        style={{ ...s.toggleGroupBtn, ...(value === "true" ? s.toggleGroupBtnActive : {}) }}
+      >
+        {label}
+      </button>
+    </div>
   );
 }
 
@@ -635,12 +875,30 @@ const s = {
     fontFamily: "sans-serif",
   },
 
+  // Filters
+  filtersBar: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "14px",
+    marginBottom: "8px",
+  },
+  searchInput: {
+    width: "100%",
+    padding: "12px 16px",
+    border: "1px solid #e0dbd4",
+    background: "#fff",
+    fontFamily: "'Georgia', serif",
+    fontSize: "0.85rem",
+    color: "#1a1a1a",
+    outline: "none",
+    boxSizing: "border-box",
+  },
+
   // Stats
   statsRow: {
     display: "flex",
     gap: "10px",
     flexWrap: "wrap",
-    marginBottom: "24px",
   },
   statChip: {
     display: "flex",
@@ -673,26 +931,72 @@ const s = {
     transition: "all 0.15s",
   },
 
+  toggleFiltersRow: {
+    display: "flex",
+    gap: "16px",
+    flexWrap: "wrap",
+    alignItems: "center",
+  },
+  toggleGroup: {
+    display: "flex",
+    border: "1px solid #e0dbd4",
+    overflow: "hidden",
+  },
+  toggleGroupBtn: {
+    padding: "7px 14px",
+    background: "#fff",
+    border: "none",
+    borderRight: "1px solid #e0dbd4",
+    cursor: "pointer",
+    fontFamily: "'Georgia', serif",
+    fontSize: "0.72rem",
+    letterSpacing: "0.06em",
+    color: "#888",
+  },
+  toggleGroupBtnActive: {
+    background: "#1a1a1a",
+    color: "#fff",
+  },
+  dateFilterGroup: {
+    display: "flex",
+    gap: "10px",
+    alignItems: "center",
+  },
+  dateLabel: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "3px",
+    fontSize: "0.62rem",
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    color: "#b0a898",
+    fontFamily: "sans-serif",
+  },
+  dateInput: {
+    padding: "6px 8px",
+    border: "1px solid #e0dbd4",
+    background: "#fff",
+    fontFamily: "sans-serif",
+    fontSize: "0.78rem",
+    color: "#1a1a1a",
+  },
+  resetBtn: {
+    padding: "7px 14px",
+    background: "none",
+    border: "1px solid #ddd8d0",
+    color: "#888",
+    cursor: "pointer",
+    fontFamily: "'Georgia', serif",
+    fontSize: "0.72rem",
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+  },
+
   divider: {
     height: "1px",
     background: "#e0dbd4",
+    marginTop: "20px",
     marginBottom: "28px",
-  },
-
-  // Search
-  searchRow: {
-    marginBottom: "20px",
-  },
-  searchInput: {
-    width: "100%",
-    padding: "12px 16px",
-    border: "1px solid #e0dbd4",
-    background: "#fff",
-    fontFamily: "'Georgia', serif",
-    fontSize: "0.85rem",
-    color: "#1a1a1a",
-    outline: "none",
-    boxSizing: "border-box",
   },
 
   // States
@@ -783,6 +1087,20 @@ const s = {
     fontFamily: "sans-serif",
     fontWeight: "600",
   },
+  customizedBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "5px",
+    padding: "3px 10px",
+    background: "#f4f1fb",
+    color: "#6a4fc2",
+    border: "1px solid #dcd2f2",
+    fontSize: "0.66rem",
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    fontFamily: "sans-serif",
+    fontWeight: "600",
+  },
   orderId: {
     fontFamily: "monospace",
     fontSize: "0.95rem",
@@ -798,13 +1116,21 @@ const s = {
     textTransform: "uppercase",
   },
   statusPill: {
-    display: "inline-block",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
     padding: "4px 12px",
     fontSize: "0.68rem",
     letterSpacing: "0.14em",
     textTransform: "uppercase",
     fontFamily: "sans-serif",
     fontWeight: "500",
+  },
+  statusDot: {
+    width: "6px",
+    height: "6px",
+    borderRadius: "50%",
+    flexShrink: 0,
   },
 
   // Info grid
@@ -857,17 +1183,41 @@ const s = {
     fontFamily: "sans-serif",
     lineHeight: "1.5",
   },
-  adminNotesSection: {
+
+  detailsWrap: {
+    marginTop: "6px",
+    paddingTop: "16px",
+    borderTop: "1px solid #f0ece6",
     display: "flex",
     flexDirection: "column",
-    gap: "6px",
-    marginBottom: "16px",
-    paddingTop: "12px",
+    gap: "4px",
+  },
+
+  // Notes (private owner notes)
+  notesSection: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "8px",
+    marginTop: "10px",
+    paddingTop: "16px",
     borderTop: "1px solid #f0ece6",
+  },
+  notesSectionHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: "6px",
+  },
+  notesPrivacyNote: {
+    fontSize: "0.68rem",
+    color: "#b07d2a",
+    fontFamily: "sans-serif",
+    fontStyle: "italic",
   },
   adminNotesTextarea: {
     width: "100%",
-    minHeight: "60px",
+    minHeight: "64px",
     padding: "10px 12px",
     border: "1px solid #ddd8d0",
     background: "#faf9f7",
@@ -877,6 +1227,11 @@ const s = {
     outline: "none",
     boxSizing: "border-box",
     resize: "vertical",
+  },
+  notesAddRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
   },
   saveNoteBtn: {
     alignSelf: "flex-start",
@@ -894,12 +1249,70 @@ const s = {
     opacity: 0.5,
     cursor: "not-allowed",
   },
+  notesList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "10px",
+    marginTop: "4px",
+  },
+  noteCard: {
+    padding: "12px 14px",
+    background: "#faf9f7",
+    border: "1px solid #eee4d8",
+  },
+  noteText: {
+    fontSize: "0.82rem",
+    color: "#1a1a1a",
+    lineHeight: "1.6",
+    fontFamily: "sans-serif",
+    margin: "0 0 8px",
+    whiteSpace: "pre-wrap",
+  },
+  noteMeta: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: "8px",
+    fontSize: "0.68rem",
+    color: "#aaa",
+    fontFamily: "sans-serif",
+  },
+  noteActions: { display: "flex", gap: "12px" },
+  noteLinkBtn: {
+    background: "none",
+    border: "none",
+    padding: 0,
+    color: "#1a6fb5",
+    cursor: "pointer",
+    fontSize: "0.68rem",
+    letterSpacing: "0.04em",
+    fontFamily: "sans-serif",
+    textDecoration: "underline",
+  },
+  noteEditActions: {
+    display: "flex",
+    gap: "10px",
+    marginTop: "8px",
+  },
+  noteCancelBtn: {
+    padding: "8px 16px",
+    border: "1px solid #ddd8d0",
+    background: "#fff",
+    color: "#888",
+    cursor: "pointer",
+    fontFamily: "'Georgia', serif",
+    fontSize: "0.72rem",
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+  },
+
   timelineSection: {
     display: "flex",
     flexDirection: "column",
     gap: "6px",
-    marginBottom: "16px",
-    paddingTop: "12px",
+    marginTop: "10px",
+    paddingTop: "16px",
     borderTop: "1px solid #f0ece6",
   },
   timelineList: {
@@ -946,7 +1359,7 @@ const s = {
   },
 
   // Items
-  itemsSection: { marginTop: "16px" },
+  itemsSection: { marginTop: "16px", display: "flex", flexDirection: "column", gap: "8px" },
   toggleBtn: {
     background: "none",
     border: "1px solid #e0dbd4",
@@ -959,7 +1372,7 @@ const s = {
     transition: "border-color 0.15s",
   },
   toggleLabel: { textTransform: "uppercase" },
-  itemsTable: { marginTop: "12px", border: "1px solid #f0ece6" },
+  itemsTable: { marginTop: "4px", border: "1px solid #f0ece6" },
   itemsTableHeader: {
     display: "grid",
     gridTemplateColumns: "2fr 1fr 1fr 0.6fr 1fr 1fr",
@@ -1026,7 +1439,7 @@ const s = {
     lineHeight: "1.6",
     fontFamily: "sans-serif",
   },
-  
+
   customBadge: {
     display: "inline-block",
     marginBottom: "5px",
@@ -1068,19 +1481,20 @@ const s = {
     fontFamily: "sans-serif",
   },
 
-  // Footer
+  // Footer / status control
   cardFooter: {
     display: "flex",
-    justifyContent: "flex-end",
-    alignItems: "center",
+    justifyContent: "flex-start",
+    alignItems: "flex-start",
     marginTop: "20px",
     paddingTop: "16px",
     borderTop: "1px solid #f0ece6",
   },
   statusControl: {
     display: "flex",
-    alignItems: "center",
-    gap: "12px",
+    flexDirection: "column",
+    gap: "8px",
+    width: "100%",
   },
   selectLabel: {
     fontSize: "0.65rem",
@@ -1089,20 +1503,40 @@ const s = {
     color: "#b0a898",
     fontFamily: "sans-serif",
   },
-  select: {
-    padding: "8px 14px",
+  actionButtonsRow: {
+    display: "flex",
+    gap: "10px",
+    flexWrap: "wrap",
+  },
+  actionBtn: {
+    padding: "9px 16px",
     border: "1px solid #ddd8d0",
-    background: "#faf9f7",
-    fontFamily: "'Georgia', serif",
-    fontSize: "0.82rem",
+    background: "#fff",
     color: "#1a1a1a",
     cursor: "pointer",
-    outline: "none",
+    fontFamily: "'Georgia', serif",
+    fontSize: "0.74rem",
     letterSpacing: "0.04em",
   },
-  selectDisabled: {
+  actionBtnPrimary: {
+    background: "#1a1a1a",
+    color: "#fff",
+    borderColor: "#1a1a1a",
+  },
+  actionBtnDanger: {
+    background: "#fff",
+    color: "#b52a2a",
+    borderColor: "#f0b3b3",
+  },
+  actionBtnDisabled: {
     opacity: 0.5,
     cursor: "not-allowed",
+  },
+  finalStatusNote: {
+    fontSize: "0.78rem",
+    color: "#aaa",
+    fontFamily: "sans-serif",
+    fontStyle: "italic",
   },
   savingText: {
     fontSize: "0.72rem",
@@ -1115,15 +1549,35 @@ const s = {
     color: "#c0392b",
     fontFamily: "sans-serif",
   },
+  successText: {
+    fontSize: "0.72rem",
+    color: "#1a7a45",
+    fontFamily: "sans-serif",
+  },
 };
 
-// Inject spinner keyframe once
+// Inject spinner keyframe + small responsive rules once. Plain inline style
+// objects can't express @media queries, so this mirrors the same
+// injected-<style> pattern already used elsewhere in this file for the
+// spinner animation.
 if (typeof document !== "undefined") {
-  const styleId = "simplicity-spinner-style";
+  const styleId = "simplicity-adminorders-style";
   if (!document.getElementById(styleId)) {
     const el = document.createElement("style");
     el.id = styleId;
-    el.textContent = `@keyframes spin { to { transform: rotate(360deg); } }`;
+    el.textContent = `
+      @keyframes spin { to { transform: rotate(360deg); } }
+      @media (max-width: 720px) {
+        .ao-info-grid { grid-template-columns: repeat(2, 1fr) !important; }
+        .ao-items-row { grid-template-columns: 1fr !important; gap: 4px !important; }
+        .ao-items-row > span:not(:first-child) { text-align: left !important; }
+        .ao-card-header { flex-direction: column; align-items: flex-start !important; gap: 10px; }
+        .ao-toggle-filters-row { flex-direction: column; align-items: flex-start !important; }
+      }
+      @media (max-width: 480px) {
+        .ao-info-grid { grid-template-columns: 1fr !important; }
+      }
+    `;
     document.head.appendChild(el);
   }
 }
