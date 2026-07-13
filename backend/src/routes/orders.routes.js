@@ -19,6 +19,16 @@ const {
   VALID_PAYMENT_METHODS,
   validatePaymentTransition,
 } = require("../utils/paymentStatus");
+const {
+  SHIPPING_METHOD_LABELS,
+  VALID_SHIPPING_METHODS,
+  MAX_CARRIER_NAME_LENGTH,
+  MAX_TRACKING_NUMBER_LENGTH,
+  MAX_TRACKING_URL_LENGTH,
+  MAX_PRIVATE_NOTE_LENGTH,
+  isSafeTrackingUrl,
+  isValidDateOnlyString,
+} = require("../utils/fulfillment");
 
 /* ─────────────────────────────────────────────
    HELPER: admin-only guard
@@ -638,6 +648,16 @@ const cartResult = await client.query(
       [order.id]
     );
 
+    // 3.6 Task O1: create this order's (empty) fulfillment record in the
+    // same transaction — every order gets exactly one row, mirroring the
+    // payments insert above, so the Ready -> Shipped transition later
+    // always has a row to update. Nothing is set yet; the owner fills it
+    // in when the order actually ships.
+    await client.query(
+      `INSERT INTO order_fulfillment (order_id) VALUES ($1)`,
+      [order.id]
+    );
+
    // 4. Copy cart items into order_items (snapshot name + price + customization
    // details). Design-linked rows additionally carry the fresh snapshot
    // computed during revalidation above — never the raw Cart/client values.
@@ -815,9 +835,10 @@ router.get("/my", authMiddleware, async (req, res) => {
   const userId = req.user.id;
 
   try {
-    // Fetch orders, LEFT JOINed to their one payment record (Task N1).
-    // LEFT JOIN is defensive — every order should have exactly one payment
-    // row post-migration, but this never 500s if one were ever missing.
+    // Fetch orders, LEFT JOINed to their one payment record (Task N1) and
+    // one fulfillment record (Task O1). LEFT JOIN is defensive — every
+    // order should have exactly one row of each post-migration, but this
+    // never 500s if one were ever missing.
     const ordersResult = await pool.query(
       `
       SELECT
@@ -828,9 +849,18 @@ router.get("/my", authMiddleware, async (req, res) => {
         pay.transaction_reference AS transaction_reference,
         pay.paid_at AS paid_at,
         pay.refunded_at AS refunded_at,
-        pay.created_at AS payment_created_at
+        pay.created_at AS payment_created_at,
+        ful.shipping_method AS shipping_method,
+        ful.carrier_name AS carrier_name,
+        ful.tracking_number AS tracking_number,
+        ful.tracking_url AS tracking_url,
+        ful.estimated_delivery_date AS estimated_delivery_date,
+        ful.shipped_at AS shipped_at,
+        ful.delivered_at AS delivered_at,
+        ful.tracking_unavailable AS tracking_unavailable
       FROM orders o
       LEFT JOIN payments pay ON pay.order_id = o.id
+      LEFT JOIN order_fulfillment ful ON ful.order_id = o.id
       WHERE o.user_id = $1
       ORDER BY o.created_at DESC
       `,
@@ -906,6 +936,14 @@ router.get("/my", authMiddleware, async (req, res) => {
         transaction_reference,
         paid_at,
         refunded_at,
+        shipping_method,
+        carrier_name,
+        tracking_number,
+        tracking_url,
+        estimated_delivery_date,
+        shipped_at,
+        delivered_at,
+        tracking_unavailable,
         ...safeOrder
       } = order;
 
@@ -915,6 +953,13 @@ router.get("/my", authMiddleware, async (req, res) => {
         payment_status === "PAID" || payment_status === "REFUNDED"
           ? transaction_reference || null
           : null;
+
+      // Task O1: shipping/carrier/tracking details are only ever shown once
+      // the order has actually shipped — never before, even if the owner
+      // pre-filled them early via PATCH /fulfillment while still Ready.
+      const isShippedOrDelivered = order.status === "shipped" || order.status === "delivered";
+      const safeTrackingUrl =
+        isShippedOrDelivered && isSafeTrackingUrl(tracking_url) ? tracking_url : null;
 
       return {
         ...safeOrder,
@@ -931,6 +976,30 @@ router.get("/my", authMiddleware, async (req, res) => {
           payment_created_at,
           paymentHistoryByOrder[order.id] || []
         ),
+        shipping_method: isShippedOrDelivered ? shipping_method : null,
+        shipping_method_display_label: isShippedOrDelivered
+          ? SHIPPING_METHOD_LABELS[shipping_method] || shipping_method
+          : null,
+        carrier_name: isShippedOrDelivered ? carrier_name : null,
+        tracking_number: isShippedOrDelivered ? tracking_number : null,
+        safe_tracking_url: safeTrackingUrl,
+        estimated_delivery_date: isShippedOrDelivered ? estimated_delivery_date : null,
+        shipped_at,
+        delivered_at,
+        // Task O1 correction: a derived, customer-safe signal — never the
+        // raw tracking_unavailable database field itself. Only ever
+        // "UNAVAILABLE" for a Shipped/Delivered Courier order with a
+        // confirmed-unavailable tracking number and none on file; null in
+        // every other case, so the frontend shows "Tracking is not
+        // available for this shipment." instead of implying it was simply
+        // forgotten.
+        tracking_status:
+          isShippedOrDelivered &&
+          shipping_method === "COURIER" &&
+          tracking_unavailable === true &&
+          !tracking_number
+            ? "UNAVAILABLE"
+            : null,
         items: itemsByOrder[order.id] || [],
       };
     });
@@ -956,14 +1025,19 @@ router.get("/my", authMiddleware, async (req, res) => {
      ?payment_status=PAID
      ?payment_method=BANK_TRANSFER
      ?refund_required=true|false   (order.status='cancelled' AND payment.status='PAID')
+   Task O1 adds:
+     ?fulfillment=ready_to_ship|in_transit|delivered
+     ?shipping_method=COURIER
+     ?tracking_missing=true|false
    Response shape is unchanged/additive: every existing field stays, plus
    status_display_label, contains_customized_items, item_count, and the full
-   payment fields/history per order.
+   payment/fulfillment fields/history per order.
 ───────────────────────────────────────────── */
 router.get("/", authMiddleware, adminOnly, async (req, res) => {
   const {
     status, search, gift, customized, date_from, date_to,
     payment_status, payment_method, refund_required,
+    fulfillment, shipping_method, tracking_missing,
   } = req.query;
 
   try {
@@ -1042,6 +1116,45 @@ router.get("/", authMiddleware, adminOnly, async (req, res) => {
       conditions.push(`NOT (o.status = 'cancelled' AND pay.status = 'PAID')`);
     }
 
+    if (fulfillment) {
+      const FULFILLMENT_STATUS_MAP = {
+        ready_to_ship: "ready",
+        in_transit: "shipped",
+        delivered: "delivered",
+      };
+      const mappedStatus = FULFILLMENT_STATUS_MAP[fulfillment];
+      if (!mappedStatus) {
+        return res.status(400).json({
+          error: `fulfillment must be one of: ${Object.keys(FULFILLMENT_STATUS_MAP).join(", ")}`,
+        });
+      }
+      params.push(mappedStatus);
+      conditions.push(`o.status = $${params.length}`);
+    }
+
+    if (shipping_method) {
+      if (!VALID_SHIPPING_METHODS.includes(shipping_method)) {
+        return res.status(400).json({
+          error: `shipping_method must be one of: ${VALID_SHIPPING_METHODS.join(", ")}`,
+        });
+      }
+      params.push(shipping_method);
+      conditions.push(`ful.shipping_method = $${params.length}`);
+    }
+
+    // A Courier shipment with an explicitly confirmed tracking_unavailable
+    // is deliberately complete, not missing — COALESCE handles any legacy
+    // row where the column could theoretically read NULL safely as false.
+    if (tracking_missing === "true") {
+      conditions.push(
+        `(o.status = 'shipped' AND ful.shipping_method = 'COURIER' AND (ful.tracking_number IS NULL OR ful.tracking_number = '') AND COALESCE(ful.tracking_unavailable, false) = false)`
+      );
+    } else if (tracking_missing === "false") {
+      conditions.push(
+        `NOT (o.status = 'shipped' AND ful.shipping_method = 'COURIER' AND (ful.tracking_number IS NULL OR ful.tracking_number = '') AND COALESCE(ful.tracking_unavailable, false) = false)`
+      );
+    }
+
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
     const ordersResult = await pool.query(
@@ -1058,10 +1171,24 @@ router.get("/", authMiddleware, adminOnly, async (req, res) => {
          pay.failure_reason AS failure_reason,
          pay.refund_reason AS refund_reason,
          pay.created_at AS payment_created_at,
-         pay.updated_at AS payment_updated_at
+         pay.updated_at AS payment_updated_at,
+         ful.id AS fulfillment_id,
+         ful.shipping_method AS shipping_method,
+         ful.carrier_name AS carrier_name,
+         ful.tracking_number AS tracking_number,
+         ful.tracking_url AS tracking_url,
+         ful.estimated_delivery_date AS estimated_delivery_date,
+         ful.shipped_at AS shipped_at,
+         ful.delivered_at AS delivered_at,
+         ful.private_note AS fulfillment_private_note,
+         ful.tracking_unavailable AS tracking_unavailable,
+         ful.updated_at AS fulfillment_updated_at,
+         fu.email AS fulfillment_updated_by_email
        FROM orders o
        JOIN users u ON u.id = o.user_id
        LEFT JOIN payments pay ON pay.order_id = o.id
+       LEFT JOIN order_fulfillment ful ON ful.order_id = o.id
+       LEFT JOIN users fu ON fu.id = ful.updated_by
        ${whereClause}
        ORDER BY o.created_at DESC`,
       params
@@ -1126,7 +1253,27 @@ router.get("/", authMiddleware, adminOnly, async (req, res) => {
 
     const ordersWithItems = orders.map((order) => {
       const items = itemsByOrder[order.id] || [];
-      const { payment_created_at, payment_updated_at, ...orderFields } = order;
+      const {
+        payment_created_at,
+        payment_updated_at,
+        fulfillment_private_note,
+        fulfillment_updated_at,
+        fulfillment_updated_by_email,
+        ...orderFields
+      } = order;
+
+      // Task O1 derived fields — never auto-transitioned, only surfaced. A
+      // Courier shipment with an explicitly confirmed tracking_unavailable
+      // is a deliberately complete state, not a missing/incomplete one.
+      const trackingMissing =
+        order.status === "shipped" &&
+        order.shipping_method === "COURIER" &&
+        !order.tracking_number &&
+        order.tracking_unavailable !== true;
+      const fulfillmentComplete =
+        Boolean(order.shipping_method) &&
+        (order.shipping_method !== "COURIER" ||
+          (order.carrier_name && (order.tracking_number || order.tracking_unavailable === true)));
 
       return {
         ...orderFields,
@@ -1141,6 +1288,15 @@ router.get("/", authMiddleware, adminOnly, async (req, res) => {
         // manual refund — this is never auto-set to REFUNDED, only surfaced.
         refund_required: order.status === "cancelled" && order.payment_status === "PAID",
         payment_history: paymentHistoryByOrder[order.id] || [],
+        shipping_method_display_label: order.shipping_method
+          ? SHIPPING_METHOD_LABELS[order.shipping_method] || order.shipping_method
+          : null,
+        private_note: fulfillment_private_note,
+        fulfillment_updated_by_email: fulfillment_updated_by_email || null,
+        ready_to_ship: order.status === "ready",
+        in_transit: order.status === "shipped",
+        tracking_missing: trackingMissing,
+        fulfillment_complete: fulfillmentComplete,
       };
     });
 
@@ -1403,6 +1559,140 @@ router.patch("/:orderId/payment", authMiddleware, adminOnly, async (req, res) =>
 // distinct from any other unexpected error.
 class MissingInventoryForCancellationError extends Error {}
 
+/* ─────────────────────────────────────────────
+   Task O1: field-level validation for whichever fulfillment fields are
+   present in a request body — shared by the standalone PATCH
+   /:orderId/fulfillment endpoint and the Ready -> Shipped transition below,
+   so the two never drift apart. Only validates/normalizes fields that were
+   actually provided (key present, not undefined); anything absent is left
+   out of the returned `fields` object entirely so callers can tell "not
+   sent" apart from "explicitly cleared."
+───────────────────────────────────────────── */
+function validateFulfillmentInput(body) {
+  const fields = {};
+
+  if (body.shipping_method !== undefined) {
+    if (!VALID_SHIPPING_METHODS.includes(body.shipping_method)) {
+      return {
+        ok: false,
+        error: `shipping_method must be one of: ${VALID_SHIPPING_METHODS.join(", ")}`,
+      };
+    }
+    fields.shipping_method = body.shipping_method;
+  }
+
+  if (body.carrier_name !== undefined) {
+    const trimmed = typeof body.carrier_name === "string" ? body.carrier_name.trim() : "";
+    if (trimmed.length > MAX_CARRIER_NAME_LENGTH) {
+      return {
+        ok: false,
+        error: `carrier_name must be ${MAX_CARRIER_NAME_LENGTH} characters or fewer.`,
+      };
+    }
+    fields.carrier_name = trimmed || null;
+  }
+
+  if (body.tracking_number !== undefined) {
+    const trimmed = typeof body.tracking_number === "string" ? body.tracking_number.trim() : "";
+    if (trimmed.length > MAX_TRACKING_NUMBER_LENGTH) {
+      return {
+        ok: false,
+        error: `tracking_number must be ${MAX_TRACKING_NUMBER_LENGTH} characters or fewer.`,
+      };
+    }
+    fields.tracking_number = trimmed || null;
+  }
+
+  if (body.tracking_url !== undefined) {
+    const trimmed = typeof body.tracking_url === "string" ? body.tracking_url.trim() : "";
+    if (!trimmed) {
+      fields.tracking_url = null;
+    } else if (trimmed.length > MAX_TRACKING_URL_LENGTH) {
+      return {
+        ok: false,
+        error: `tracking_url must be ${MAX_TRACKING_URL_LENGTH} characters or fewer.`,
+      };
+    } else if (!isSafeTrackingUrl(trimmed)) {
+      // Rejects javascript:, data:, and any other malformed/unsafe value —
+      // only well-formed http:// or https:// URLs are ever accepted.
+      return {
+        ok: false,
+        error: "tracking_url must be a valid http:// or https:// link.",
+      };
+    } else {
+      fields.tracking_url = trimmed;
+    }
+  }
+
+  if (body.estimated_delivery_date !== undefined) {
+    if (body.estimated_delivery_date === null || body.estimated_delivery_date === "") {
+      fields.estimated_delivery_date = null;
+    } else if (!isValidDateOnlyString(body.estimated_delivery_date)) {
+      return {
+        ok: false,
+        error: "estimated_delivery_date must be a valid date (YYYY-MM-DD).",
+      };
+    } else {
+      fields.estimated_delivery_date = body.estimated_delivery_date;
+    }
+  }
+
+  if (body.private_note !== undefined) {
+    const trimmed = typeof body.private_note === "string" ? body.private_note.trim() : "";
+    if (trimmed.length > MAX_PRIVATE_NOTE_LENGTH) {
+      return {
+        ok: false,
+        error: `private_note must be ${MAX_PRIVATE_NOTE_LENGTH} characters or fewer.`,
+      };
+    }
+    fields.private_note = trimmed || null;
+  }
+
+  // Task O1 correction: must be a real boolean — an arbitrary truthy value
+  // (e.g. the string "true") is never silently coerced, it's rejected.
+  if (body.tracking_unavailable !== undefined) {
+    if (typeof body.tracking_unavailable !== "boolean") {
+      return {
+        ok: false,
+        error: "tracking_unavailable must be a boolean.",
+      };
+    }
+    fields.tracking_unavailable = body.tracking_unavailable;
+  }
+
+  return { ok: true, fields };
+}
+
+// Business rules specific to actually marking an order Shipped — separate
+// from the generic field validation above, since a plain fulfillment edit
+// (PATCH /:orderId/fulfillment) never requires any of this.
+function validateReadyToShippedRequirements(fields, trackingUnavailable) {
+  if (!fields.shipping_method) {
+    return {
+      ok: false,
+      error: "shipping_method is required to mark an order as Shipped.",
+    };
+  }
+
+  if (fields.shipping_method === "COURIER") {
+    if (!fields.carrier_name) {
+      return {
+        ok: false,
+        error: "carrier_name is required for Courier shipments.",
+      };
+    }
+    if (!fields.tracking_number && !trackingUnavailable) {
+      return {
+        ok: false,
+        error:
+          "tracking_number is required for Courier shipments unless tracking is explicitly marked unavailable.",
+      };
+    }
+  }
+
+  return { ok: true };
+}
+
 router.patch("/:id/status", authMiddleware, adminOnly, async (req, res) => {
   const orderId = parseInt(req.params.id);
   const { status } = req.body;
@@ -1449,6 +1739,94 @@ router.patch("/:id/status", authMiddleware, adminOnly, async (req, res) => {
         message: "Order status unchanged.",
         order: fullOrder.rows[0],
       });
+    }
+
+    // Task O1: Ready -> Shipped requires owner-entered fulfillment info in
+    // this same request ("Save & Mark Shipped" is one combined action) —
+    // validated here, before any write, so a rejected request changes
+    // nothing at all: no order status, no history, no partial fulfillment
+    // update. shipped_at is never taken from the browser — set below from
+    // the server clock only once validation passes.
+    let fulfillmentFieldsToApply = null;
+
+    if (currentOrder.status === "ready" && status === "shipped") {
+      const inputValidation = validateFulfillmentInput(req.body);
+      if (!inputValidation.ok) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: inputValidation.error });
+      }
+
+      // Only a real, explicit boolean counts — validateFulfillmentInput
+      // above already rejected anything else (e.g. the string "true").
+      const trackingUnavailable = inputValidation.fields.tracking_unavailable === true;
+      const requirementCheck = validateReadyToShippedRequirements(
+        inputValidation.fields,
+        trackingUnavailable
+      );
+      if (!requirementCheck.ok) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: requirementCheck.error });
+      }
+
+      fulfillmentFieldsToApply = inputValidation.fields;
+
+      // Task O1 correction: persist the confirmation itself, normalized —
+      // never true for a non-Courier method, and always cleared the moment
+      // a real tracking number is entered (a number present at all means
+      // tracking is no longer "unavailable", regardless of what the
+      // request separately claimed).
+      if (fulfillmentFieldsToApply.shipping_method === "COURIER") {
+        fulfillmentFieldsToApply.tracking_unavailable = fulfillmentFieldsToApply.tracking_number
+          ? false
+          : trackingUnavailable;
+      } else {
+        fulfillmentFieldsToApply.tracking_unavailable = false;
+      }
+    }
+
+    // Shipped -> Delivered needs no fulfillment fields at all — tracking
+    // corrections happen separately via PATCH /:orderId/fulfillment.
+    // delivered_at, like shipped_at, is always server time.
+    const markDelivered = currentOrder.status === "shipped" && status === "delivered";
+
+    if (fulfillmentFieldsToApply) {
+      const setClauses = [];
+      const values = [];
+      let idx = 1;
+      for (const [key, value] of Object.entries(fulfillmentFieldsToApply)) {
+        setClauses.push(`${key} = $${idx++}`);
+        values.push(value);
+      }
+      setClauses.push(`shipped_at = COALESCE(shipped_at, now())`);
+      setClauses.push(`updated_at = now()`);
+      setClauses.push(`updated_by = $${idx++}`);
+      values.push(req.user.id);
+      values.push(orderId);
+
+      const fulfillmentUpdateResult = await client.query(
+        `UPDATE order_fulfillment SET ${setClauses.join(", ")} WHERE order_id = $${idx} RETURNING order_id`,
+        values
+      );
+
+      if (fulfillmentUpdateResult.rowCount === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Fulfillment record not found for this order." });
+      }
+    }
+
+    if (markDelivered) {
+      const fulfillmentUpdateResult = await client.query(
+        `UPDATE order_fulfillment
+         SET delivered_at = COALESCE(delivered_at, now()), updated_at = now(), updated_by = $1
+         WHERE order_id = $2
+         RETURNING order_id`,
+        [req.user.id, orderId]
+      );
+
+      if (fulfillmentUpdateResult.rowCount === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Fulfillment record not found for this order." });
+      }
     }
 
     // Restock only on the transition into cancelled, and only once ever
@@ -1578,6 +1956,183 @@ router.patch("/:id/status", authMiddleware, adminOnly, async (req, res) => {
     res.status(500).json({ error: "Failed to update order status." });
   } finally {
     client.release();
+  }
+});
+
+/* ─────────────────────────────────────────────
+   Task O1: owner fulfillment endpoints. Kept in orders.routes.js — mirrors
+   Task N1's payment endpoints, order-scoped resources living alongside the
+   order routes that already mount at /api/orders.
+───────────────────────────────────────────── */
+function serializeFulfillment(row) {
+  return {
+    id: row.id,
+    order_id: row.order_id,
+    shipping_method: row.shipping_method,
+    shipping_method_display_label: row.shipping_method
+      ? SHIPPING_METHOD_LABELS[row.shipping_method] || row.shipping_method
+      : null,
+    carrier_name: row.carrier_name,
+    tracking_number: row.tracking_number,
+    tracking_url: row.tracking_url,
+    estimated_delivery_date: row.estimated_delivery_date,
+    shipped_at: row.shipped_at,
+    delivered_at: row.delivered_at,
+    private_note: row.private_note,
+    tracking_unavailable: row.tracking_unavailable,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    updated_by: row.updated_by,
+  };
+}
+
+// GET /api/orders/:orderId/fulfillment — admin only.
+router.get("/:orderId/fulfillment", authMiddleware, adminOnly, async (req, res) => {
+  const orderId = parseInt(req.params.orderId);
+
+  try {
+    const orderResult = await pool.query("SELECT id, status FROM orders WHERE id = $1", [orderId]);
+    if (orderResult.rows.length === 0) {
+      return res.status(404).json({ error: "Order not found." });
+    }
+
+    const fulfillmentResult = await pool.query(
+      "SELECT * FROM order_fulfillment WHERE order_id = $1",
+      [orderId]
+    );
+    if (fulfillmentResult.rows.length === 0) {
+      return res.status(404).json({ error: "Fulfillment record not found for this order." });
+    }
+    const fulfillment = fulfillmentResult.rows[0];
+
+    res.json({
+      fulfillment: serializeFulfillment(fulfillment),
+      ready_to_ship: orderResult.rows[0].status === "ready",
+      in_transit: orderResult.rows[0].status === "shipped",
+      tracking_missing:
+        orderResult.rows[0].status === "shipped" &&
+        fulfillment.shipping_method === "COURIER" &&
+        !fulfillment.tracking_number &&
+        fulfillment.tracking_unavailable !== true,
+    });
+  } catch (err) {
+    console.error("Fetch fulfillment error:", err);
+    res.status(500).json({ error: "Failed to fetch fulfillment." });
+  }
+});
+
+// PATCH /api/orders/:orderId/fulfillment — admin only. Corrects fulfillment
+// fields independently of the order-status transition above (e.g. fixing a
+// mistyped tracking number after Shipped, or preparing shipping info while
+// still Ready). Never touches order status, shipped_at, or delivered_at —
+// those are exclusively server-set via PATCH /:id/status.
+router.patch("/:orderId/fulfillment", authMiddleware, adminOnly, async (req, res) => {
+  const orderId = parseInt(req.params.orderId);
+
+  const validation = validateFulfillmentInput(req.body);
+  if (!validation.ok) {
+    return res.status(400).json({ error: validation.error });
+  }
+
+  // Guard on the client's raw input before any normalization below adds an
+  // implicit field to an otherwise genuinely empty request.
+  if (Object.keys(validation.fields).length === 0) {
+    return res.status(400).json({ error: "No fulfillment fields were provided." });
+  }
+
+  try {
+    const orderResult = await pool.query("SELECT id FROM orders WHERE id = $1", [orderId]);
+    if (orderResult.rows.length === 0) {
+      return res.status(404).json({ error: "Order not found." });
+    }
+
+    const currentResult = await pool.query(
+      `SELECT f.shipping_method, f.tracking_number, f.tracking_unavailable, o.status AS order_status
+       FROM order_fulfillment f
+       JOIN orders o ON o.id = f.order_id
+       WHERE f.order_id = $1`,
+      [orderId]
+    );
+    if (currentResult.rows.length === 0) {
+      return res.status(404).json({ error: "Fulfillment record not found for this order." });
+    }
+    const current = currentResult.rows[0];
+
+    // Task O1 correction: build the *effective final* state — current DB
+    // values merged with whatever this request actually changes — so the
+    // shipped-Courier tracking invariant is checked against what the row
+    // will actually look like after this update, not just the one field
+    // the request happened to touch. Covers every request shape: clearing
+    // tracking_number, flipping tracking_unavailable to false with no
+    // number in play, switching shipping_method to COURIER on a row that
+    // never had tracking data, and any partial combination of these.
+    const effectiveMethod =
+      validation.fields.shipping_method !== undefined
+        ? validation.fields.shipping_method
+        : current.shipping_method;
+    const effectiveTrackingNumber =
+      validation.fields.tracking_number !== undefined
+        ? validation.fields.tracking_number
+        : current.tracking_number;
+    const effectiveTrackingUnavailablePreNormalization =
+      validation.fields.tracking_unavailable !== undefined
+        ? validation.fields.tracking_unavailable
+        : current.tracking_unavailable;
+
+    // Same normalization as the Ready -> Shipped path — never true for a
+    // non-Courier method, and always cleared the moment a real tracking
+    // number is in play, regardless of what tracking_unavailable itself
+    // was requested as.
+    const effectiveTrackingUnavailable =
+      effectiveMethod !== "COURIER"
+        ? false
+        : effectiveTrackingNumber
+        ? false
+        : effectiveTrackingUnavailablePreNormalization;
+
+    if (
+      (current.order_status === "shipped" || current.order_status === "delivered") &&
+      effectiveMethod === "COURIER" &&
+      !effectiveTrackingNumber &&
+      effectiveTrackingUnavailable !== true
+    ) {
+      return res.status(400).json({
+        error:
+          "A shipped Courier order must have a tracking number or be marked as tracking unavailable.",
+      });
+    }
+
+    validation.fields.tracking_unavailable = effectiveTrackingUnavailable;
+
+    const fieldEntries = Object.entries(validation.fields);
+    const setClauses = [];
+    const values = [];
+    let idx = 1;
+    for (const [key, value] of fieldEntries) {
+      setClauses.push(`${key} = $${idx++}`);
+      values.push(value);
+    }
+    setClauses.push(`updated_at = now()`);
+    setClauses.push(`updated_by = $${idx++}`);
+    values.push(req.user.id);
+    values.push(orderId);
+
+    const updateResult = await pool.query(
+      `UPDATE order_fulfillment SET ${setClauses.join(", ")} WHERE order_id = $${idx} RETURNING *`,
+      values
+    );
+
+    if (updateResult.rows.length === 0) {
+      return res.status(404).json({ error: "Fulfillment record not found for this order." });
+    }
+
+    res.json({
+      message: "Fulfillment updated.",
+      fulfillment: serializeFulfillment(updateResult.rows[0]),
+    });
+  } catch (err) {
+    console.error("Update fulfillment error:", err);
+    res.status(500).json({ error: "Failed to update fulfillment." });
   }
 });
 

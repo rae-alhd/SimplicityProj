@@ -197,6 +197,18 @@ function Dashboard({ user, setUser }) {
     return { pendingPayments, paidOrders, refundRequiredCount, paidRevenue };
   }, [orders]);
 
+  // Task O1: fulfillment stats, derived from the same admin orders list —
+  // each order already carries ready_to_ship/in_transit/tracking_missing
+  // additively. Ready orders are never called "Shipped" here — they're
+  // counted separately as Ready to Ship until an owner actually ships them.
+  const fulfillmentStats = useMemo(() => {
+    const readyToShip = orders.filter((o) => o.ready_to_ship).length;
+    const inTransit = orders.filter((o) => o.in_transit).length;
+    const trackingMissingCount = orders.filter((o) => o.tracking_missing).length;
+
+    return { readyToShip, inTransit, trackingMissingCount };
+  }, [orders]);
+
   const outOfStockProducts = useMemo(
     () => products.filter((p) => Number(p.stock_quantity || 0) <= 0),
     [products]
@@ -287,6 +299,16 @@ function Dashboard({ user, setUser }) {
                 label="Paid Revenue"
                 value={formatTRY(paymentStats.paidRevenue)}
               />
+            </div>
+          </div>
+
+          <div style={{ marginTop: "18px" }}>
+            <p style={styles.smallEyebrow}>Fulfillment</p>
+            <div style={styles.statsGrid}>
+              <StatCard label="Ready to Ship" value={fulfillmentStats.readyToShip} />
+              <StatCard label="In Transit" value={fulfillmentStats.inTransit} />
+              <StatCard label="Tracking Missing" value={fulfillmentStats.trackingMissingCount} />
+              <StatCard label="Delivered Orders" value={stats.deliveredOrders} />
             </div>
           </div>
 

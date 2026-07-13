@@ -16,6 +16,12 @@ import {
   paymentMethodLabel,
   paymentStatusLabel,
 } from "../utils/paymentStatus";
+import {
+  ALL_SHIPPING_METHODS,
+  FULFILLMENT_BADGE_STYLES,
+  formatDateOnly,
+  shippingMethodLabel,
+} from "../utils/fulfillment";
 
 // Matches order id (plain or "#123" style), customer name/email/phone, and
 // any item's product name — all case-insensitive substring matches.
@@ -79,6 +85,22 @@ function PaymentStatusBadge({ status }) {
     >
       <span style={{ ...s.statusDot, background: cfg.dot }} />
       {paymentStatusLabel(status)}
+    </span>
+  );
+}
+
+function FulfillmentBadge({ kind, label }) {
+  const cfg = FULFILLMENT_BADGE_STYLES[kind] || FULFILLMENT_BADGE_STYLES.ready_to_ship;
+  return (
+    <span
+      style={{
+        ...s.statusPill,
+        background: cfg.background,
+        color: cfg.color,
+        border: `1px solid ${cfg.border}`,
+      }}
+    >
+      {label}
     </span>
   );
 }
@@ -544,6 +566,390 @@ function PaymentSection({ order, token, onPaymentUpdated }) {
   );
 }
 
+/* ─────────────────────────────────────────────
+   Shipping & Fulfillment — Task O1. Always shows the current shipping
+   record; a Ready order gets a combined "Save & Mark Shipped" form (one
+   request, one transition); a Shipped/Delivered order gets an editable
+   tracking-correction form, plus "Mark Delivered" while still Shipped.
+   Keyed by order.id + order.status from OrderCard below, so local form
+   state re-syncs from fresh props at exactly the moments a transition
+   actually happens, without losing in-progress edits on unrelated refreshes.
+───────────────────────────────────────────── */
+function FulfillmentSection({ order, token, onOrderUpdated }) {
+  const isReady = order.status === "ready";
+  const isShipped = order.status === "shipped";
+  const isDelivered = order.status === "delivered";
+  const canEditTracking = isShipped || isDelivered;
+
+  const [shippingMethod, setShippingMethod] = useState(order.shipping_method || "");
+  const [carrierName, setCarrierName] = useState(order.carrier_name || "");
+  const [trackingNumber, setTrackingNumber] = useState(order.tracking_number || "");
+  const [trackingUrl, setTrackingUrl] = useState(order.tracking_url || "");
+  const [estimatedDeliveryDate, setEstimatedDeliveryDate] = useState(
+    order.estimated_delivery_date || ""
+  );
+  const [privateNote, setPrivateNote] = useState(order.private_note || "");
+  const [trackingUnavailable, setTrackingUnavailable] = useState(
+    order.tracking_unavailable === true
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [successMessage, setSuccessMessage] = useState("");
+
+  const authHeaders = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
+  };
+
+  const handleSaveAndShip = async () => {
+    setSaving(true);
+    setError("");
+    setSuccessMessage("");
+    try {
+      const res = await fetch(`${API_BASE}/orders/${order.id}/status`, {
+        method: "PATCH",
+        headers: authHeaders,
+        body: JSON.stringify({
+          status: "shipped",
+          shipping_method: shippingMethod,
+          carrier_name: carrierName,
+          tracking_number: trackingNumber,
+          tracking_url: trackingUrl,
+          estimated_delivery_date: estimatedDeliveryDate,
+          private_note: privateNote,
+          tracking_unavailable: trackingUnavailable,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to mark as shipped.");
+      setSuccessMessage("Order marked Shipped.");
+      await onOrderUpdated();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSaveCorrections = async () => {
+    setSaving(true);
+    setError("");
+    setSuccessMessage("");
+    try {
+      const res = await fetch(`${API_BASE}/orders/${order.id}/fulfillment`, {
+        method: "PATCH",
+        headers: authHeaders,
+        body: JSON.stringify({
+          carrier_name: carrierName,
+          tracking_number: trackingNumber,
+          tracking_url: trackingUrl,
+          estimated_delivery_date: estimatedDeliveryDate,
+          private_note: privateNote,
+          tracking_unavailable: trackingUnavailable,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update fulfillment.");
+      setSuccessMessage("Fulfillment details updated.");
+      await onOrderUpdated();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleMarkDelivered = async () => {
+    const confirmed = window.confirm("Mark this order as Delivered? This cannot be undone.");
+    if (!confirmed) return;
+
+    setSaving(true);
+    setError("");
+    setSuccessMessage("");
+    try {
+      const res = await fetch(`${API_BASE}/orders/${order.id}/status`, {
+        method: "PATCH",
+        headers: authHeaders,
+        body: JSON.stringify({ status: "delivered" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to mark as delivered.");
+      setSuccessMessage("Order marked Delivered.");
+      await onOrderUpdated();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={s.fulfillmentSection}>
+      <span style={s.infoLabel}>Shipping & Fulfillment</span>
+
+      <div style={s.infoGrid} className="ao-info-grid">
+        <InfoBlock label="Shipping Address" value={order.address || "—"} />
+        <InfoBlock label="Method" value={shippingMethodLabel(order.shipping_method)} />
+        <InfoBlock label="Carrier" value={order.carrier_name || "—"} />
+        <InfoBlock label="Tracking Number" value={order.tracking_number || "—"} />
+        <InfoBlock label="Tracking URL" value={order.tracking_url || "—"} />
+        <InfoBlock label="Est. Delivery" value={formatDateOnly(order.estimated_delivery_date)} />
+        <InfoBlock label="Shipped" value={formatTimelineDate(order.shipped_at)} />
+        <InfoBlock label="Delivered" value={formatTimelineDate(order.delivered_at)} />
+      </div>
+
+      {order.private_note && (
+        <div style={s.notesRow}>
+          <span style={s.infoLabel}>Private Fulfillment Note</span>
+          <span style={s.notesValue}>{order.private_note}</span>
+        </div>
+      )}
+      <span style={s.notesPrivacyNote}>
+        Customers cannot see the private fulfillment note.
+      </span>
+
+      {isReady && (
+        <div style={s.paymentFormBox}>
+          <span style={s.formSectionLabel}>Save &amp; Mark Shipped</span>
+
+          <label style={s.formFieldLabel}>
+            Shipping Method (required)
+            <select
+              value={shippingMethod}
+              onChange={(e) => {
+                const nextMethod = e.target.value;
+                setShippingMethod(nextMethod);
+                // Switching away from Courier clears the confirmation —
+                // it only ever means anything for a Courier shipment.
+                if (nextMethod !== "COURIER") setTrackingUnavailable(false);
+              }}
+              style={s.formSelect}
+            >
+              <option value="">Select a method...</option>
+              {ALL_SHIPPING_METHODS.map((m) => (
+                <option key={m} value={m}>{shippingMethodLabel(m)}</option>
+              ))}
+            </select>
+          </label>
+
+          <label style={s.formFieldLabel}>
+            Carrier{shippingMethod === "COURIER" ? " (required)" : " (optional)"}
+            <input
+              type="text"
+              value={carrierName}
+              onChange={(e) => setCarrierName(e.target.value)}
+              maxLength={120}
+              style={s.formInput}
+              placeholder="e.g. Aras Kargo"
+            />
+          </label>
+
+          <label style={s.formFieldLabel}>
+            Tracking Number
+            {shippingMethod === "COURIER" && !trackingUnavailable ? " (required)" : " (optional)"}
+            <input
+              type="text"
+              value={trackingNumber}
+              onChange={(e) => {
+                setTrackingNumber(e.target.value);
+                // Entering a real number means tracking is no longer unavailable.
+                if (e.target.value.trim()) setTrackingUnavailable(false);
+              }}
+              maxLength={100}
+              style={s.formInput}
+              placeholder="e.g. 123456789"
+              disabled={trackingUnavailable}
+            />
+          </label>
+
+          {shippingMethod === "COURIER" && (
+            <div style={s.checkboxBlock}>
+              <label style={s.checkboxRow}>
+                <input
+                  type="checkbox"
+                  checked={trackingUnavailable}
+                  onChange={(e) => {
+                    setTrackingUnavailable(e.target.checked);
+                    if (e.target.checked) setTrackingNumber("");
+                  }}
+                />
+                Tracking is unavailable
+              </label>
+              {trackingUnavailable && (
+                <span style={s.checkboxExplanation}>
+                  This shipment does not provide a tracking number. The order can still be marked Shipped.
+                </span>
+              )}
+            </div>
+          )}
+
+          <label style={s.formFieldLabel}>
+            Tracking URL (optional)
+            <input
+              type="text"
+              value={trackingUrl}
+              onChange={(e) => setTrackingUrl(e.target.value)}
+              maxLength={500}
+              style={s.formInput}
+              placeholder="https://..."
+            />
+          </label>
+
+          <label style={s.formFieldLabel}>
+            Estimated Delivery Date (optional)
+            <input
+              type="date"
+              value={estimatedDeliveryDate}
+              onChange={(e) => setEstimatedDeliveryDate(e.target.value)}
+              style={s.formInput}
+            />
+          </label>
+
+          <label style={s.formFieldLabel}>
+            Private Note (optional)
+            <textarea
+              value={privateNote}
+              onChange={(e) => setPrivateNote(e.target.value)}
+              maxLength={2000}
+              style={s.adminNotesTextarea}
+              placeholder="Internal note about this shipment..."
+            />
+          </label>
+
+          <div style={s.notesAddRow}>
+            <button
+              onClick={handleSaveAndShip}
+              disabled={saving || !shippingMethod}
+              style={{
+                ...s.saveNoteBtn,
+                ...(saving || !shippingMethod ? s.saveNoteBtnDisabled : {}),
+              }}
+            >
+              {saving ? "Saving..." : "Save & Mark Shipped"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {canEditTracking && (
+        <div style={s.paymentFormBox}>
+          <span style={s.formSectionLabel}>
+            {isDelivered ? "Correct Tracking Information" : "Tracking Information"}
+          </span>
+
+          <label style={s.formFieldLabel}>
+            Carrier
+            <input
+              type="text"
+              value={carrierName}
+              onChange={(e) => setCarrierName(e.target.value)}
+              maxLength={120}
+              style={s.formInput}
+            />
+          </label>
+
+          <label style={s.formFieldLabel}>
+            Tracking Number
+            <input
+              type="text"
+              value={trackingNumber}
+              onChange={(e) => {
+                setTrackingNumber(e.target.value);
+                // Entering a real number means tracking is no longer unavailable.
+                if (e.target.value.trim()) setTrackingUnavailable(false);
+              }}
+              maxLength={100}
+              style={s.formInput}
+              disabled={trackingUnavailable}
+            />
+          </label>
+
+          {shippingMethod === "COURIER" && (
+            <div style={s.checkboxBlock}>
+              <label style={s.checkboxRow}>
+                <input
+                  type="checkbox"
+                  checked={trackingUnavailable}
+                  onChange={(e) => {
+                    setTrackingUnavailable(e.target.checked);
+                    if (e.target.checked) setTrackingNumber("");
+                  }}
+                />
+                Tracking is unavailable
+              </label>
+              {trackingUnavailable && (
+                <span style={s.checkboxExplanation}>
+                  This shipment does not provide a tracking number.
+                </span>
+              )}
+            </div>
+          )}
+
+          <label style={s.formFieldLabel}>
+            Tracking URL
+            <input
+              type="text"
+              value={trackingUrl}
+              onChange={(e) => setTrackingUrl(e.target.value)}
+              maxLength={500}
+              style={s.formInput}
+            />
+          </label>
+
+          <label style={s.formFieldLabel}>
+            Estimated Delivery Date
+            <input
+              type="date"
+              value={estimatedDeliveryDate}
+              onChange={(e) => setEstimatedDeliveryDate(e.target.value)}
+              style={s.formInput}
+            />
+          </label>
+
+          <label style={s.formFieldLabel}>
+            Private Note
+            <textarea
+              value={privateNote}
+              onChange={(e) => setPrivateNote(e.target.value)}
+              maxLength={2000}
+              style={s.adminNotesTextarea}
+            />
+          </label>
+
+          <div style={s.notesAddRow}>
+            <button
+              onClick={handleSaveCorrections}
+              disabled={saving}
+              style={{
+                ...s.saveNoteBtn,
+                ...(saving ? s.saveNoteBtnDisabled : {}),
+              }}
+            >
+              {saving ? "Saving..." : "Save Changes"}
+            </button>
+            {isShipped && (
+              <button
+                onClick={handleMarkDelivered}
+                disabled={saving}
+                style={{
+                  ...s.actionBtn,
+                  ...s.actionBtnPrimary,
+                  ...(saving ? s.actionBtnDisabled : {}),
+                }}
+              >
+                Mark Delivered
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {error && <p style={s.saveErrorText}>{error}</p>}
+      {successMessage && !error && <p style={s.successText}>{successMessage}</p>}
+    </div>
+  );
+}
+
 function OrderCard({ order, onOrderUpdated, productImageMap, token }) {
   const [expanded, setExpanded] = useState(false);
   const [savingStatus, setSavingStatus] = useState(false);
@@ -597,7 +1003,15 @@ function OrderCard({ order, onOrderUpdated, productImageMap, token }) {
   const statusHistory = Array.isArray(order.status_history) ? order.status_history : [];
   const itemCount = order.item_count ?? items.reduce((n, i) => n + Number(i.quantity || 0), 0);
   const isCustomized = order.contains_customized_items ?? items.some((i) => i.is_customized);
-  const actions = getStatusActions(order.status);
+  // Task O1: the "shipped" and "delivered" transitions are no longer a bare
+  // status button — Ready gets a combined fulfillment form ("Save & Mark
+  // Shipped") and Shipped gets its own "Mark Delivered" button inside
+  // FulfillmentSection, both bundling required shipment info with the
+  // transition. Everything else (e.g. Cancel Order) still lives here.
+  const genericActions = getStatusActions(order.status).filter(
+    (action) => action.to !== "shipped" && action.to !== "delivered"
+  );
+  const isTerminalStatus = order.status === "delivered" || order.status === "cancelled";
 
   return (
     <div style={s.card}>
@@ -630,6 +1044,18 @@ function OrderCard({ order, onOrderUpdated, productImageMap, token }) {
         <span style={s.paymentMethodTag}>{paymentMethodLabel(order.payment_method)}</span>
         {order.refund_required && (
           <span style={s.refundRequiredBadge}>⚠ Refund Required</span>
+        )}
+        {/* Task O1: order.status already reads "Delivered" via StatusBadge
+            above — no separate Delivered fulfillment badge, to avoid
+            showing the same word twice on one card. */}
+        {order.ready_to_ship && (
+          <FulfillmentBadge kind="ready_to_ship" label="Ready to Ship" />
+        )}
+        {order.in_transit && (
+          <FulfillmentBadge kind="in_transit" label="In Transit" />
+        )}
+        {order.tracking_missing && (
+          <FulfillmentBadge kind="tracking_missing" label="⚠ Tracking Missing" />
         )}
       </div>
 
@@ -801,6 +1227,16 @@ function OrderCard({ order, onOrderUpdated, productImageMap, token }) {
             </div>
           </div>
 
+          {/* ── Shipping & Fulfillment ── */}
+          {expanded && (
+            <FulfillmentSection
+              key={`${order.id}-${order.status}`}
+              order={order}
+              token={token}
+              onOrderUpdated={onOrderUpdated}
+            />
+          )}
+
           {/* ── Payment Management ── */}
           {expanded && (
             <PaymentSection order={order} token={token} onPaymentUpdated={onOrderUpdated} />
@@ -816,12 +1252,17 @@ function OrderCard({ order, onOrderUpdated, productImageMap, token }) {
         <div style={s.statusControl}>
           <span style={s.selectLabel}>Update Status</span>
           <div style={s.actionButtonsRow}>
-            {actions.length === 0 && (
+            {genericActions.length === 0 && isTerminalStatus && (
               <span style={s.finalStatusNote}>
                 {order.status === "delivered" ? "Delivered — final status, no actions." : "Cancelled — final status, no actions."}
               </span>
             )}
-            {actions.map((action) => (
+            {genericActions.length === 0 && !isTerminalStatus && (
+              <span style={s.finalStatusNote}>
+                Use the Shipping & Fulfillment section below to mark this order Delivered.
+              </span>
+            )}
+            {genericActions.map((action) => (
               <button
                 key={action.to}
                 onClick={() => handleStatusAction(action.to, action.label)}
@@ -869,7 +1310,16 @@ const EMPTY_FILTERS = {
   paymentStatus: "all",
   paymentMethod: "all",
   refundRequired: "all",
+  fulfillment: "all",
+  shippingMethod: "all",
+  trackingMissing: "all",
 };
+
+const FULFILLMENT_FILTER_OPTIONS = [
+  { value: "ready_to_ship", label: "Ready to Ship" },
+  { value: "in_transit", label: "In Transit" },
+  { value: "delivered", label: "Delivered" },
+];
 
 export default function AdminOrders() {
   const [orders, setOrders] = useState([]);
@@ -955,6 +1405,16 @@ export default function AdminOrders() {
     if (filters.refundRequired !== "all") {
       list = list.filter((o) => Boolean(o.refund_required) === (filters.refundRequired === "true"));
     }
+    if (filters.fulfillment !== "all") {
+      const FULFILLMENT_STATUS_MAP = { ready_to_ship: "ready", in_transit: "shipped", delivered: "delivered" };
+      list = list.filter((o) => o.status === FULFILLMENT_STATUS_MAP[filters.fulfillment]);
+    }
+    if (filters.shippingMethod !== "all") {
+      list = list.filter((o) => o.shipping_method === filters.shippingMethod);
+    }
+    if (filters.trackingMissing !== "all") {
+      list = list.filter((o) => Boolean(o.tracking_missing) === (filters.trackingMissing === "true"));
+    }
 
     const normalizedSearch = filters.search.trim().toLowerCase();
     if (normalizedSearch) {
@@ -991,7 +1451,10 @@ export default function AdminOrders() {
     filters.dateTo !== "" ||
     filters.paymentStatus !== "all" ||
     filters.paymentMethod !== "all" ||
-    filters.refundRequired !== "all";
+    filters.refundRequired !== "all" ||
+    filters.fulfillment !== "all" ||
+    filters.shippingMethod !== "all" ||
+    filters.trackingMissing !== "all";
 
   return (
     <>
@@ -1065,6 +1528,11 @@ export default function AdminOrders() {
                 value={filters.refundRequired}
                 onChange={(v) => setFilter("refundRequired", v)}
               />
+              <ToggleFilter
+                label="Tracking Missing"
+                value={filters.trackingMissing}
+                onChange={(v) => setFilter("trackingMissing", v)}
+              />
 
               <label style={s.dateLabel}>
                 Payment Method
@@ -1076,6 +1544,34 @@ export default function AdminOrders() {
                   <option value="all">All</option>
                   {ALL_PAYMENT_METHODS.map((m) => (
                     <option key={m} value={m}>{paymentMethodLabel(m)}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label style={s.dateLabel}>
+                Fulfillment
+                <select
+                  value={filters.fulfillment}
+                  onChange={(e) => setFilter("fulfillment", e.target.value)}
+                  style={s.dateInput}
+                >
+                  <option value="all">All Fulfillment</option>
+                  {FULFILLMENT_FILTER_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label style={s.dateLabel}>
+                Shipping Method
+                <select
+                  value={filters.shippingMethod}
+                  onChange={(e) => setFilter("shippingMethod", e.target.value)}
+                  style={s.dateInput}
+                >
+                  <option value="all">All</option>
+                  {ALL_SHIPPING_METHODS.map((m) => (
+                    <option key={m} value={m}>{shippingMethodLabel(m)}</option>
                   ))}
                 </select>
               </label>
@@ -1748,6 +2244,44 @@ const s = {
     fontFamily: "sans-serif",
     fontStyle: "italic",
     marginTop: "2px",
+  },
+
+  // Shipping & Fulfillment (Task O1)
+  fulfillmentSection: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "8px",
+    marginTop: "10px",
+    paddingTop: "16px",
+    borderTop: "1px solid #f0ece6",
+  },
+  formSectionLabel: {
+    fontSize: "0.72rem",
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: "#1a1a1a",
+    fontFamily: "sans-serif",
+    fontWeight: "600",
+  },
+  checkboxRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    fontSize: "0.78rem",
+    color: "#555",
+    fontFamily: "sans-serif",
+  },
+  checkboxBlock: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "4px",
+  },
+  checkboxExplanation: {
+    fontSize: "0.7rem",
+    color: "#888",
+    fontFamily: "sans-serif",
+    fontStyle: "italic",
+    marginLeft: "22px",
   },
 
   timelineSection: {

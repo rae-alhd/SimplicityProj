@@ -7,6 +7,7 @@ import {
   statusLabel,
 } from "../utils/orderStatus";
 import { paymentMethodLabel, paymentStatusLabel } from "../utils/paymentStatus";
+import { formatDateOnly } from "../utils/fulfillment";
 
 function StatusBadge({ status }) {
   const cfg = getStatusBadgeStyle(status);
@@ -159,6 +160,111 @@ function PaymentInfo({ order }) {
   );
 }
 
+/* ─────────────────────────────────────────────
+   Task O1: customer-safe delivery section. Only ever reads the safe fields
+   GET /orders/my already provides (shipping_method, carrier_name,
+   tracking_number, safe_tracking_url, estimated_delivery_date, shipped_at,
+   delivered_at) — never a private fulfillment note.
+───────────────────────────────────────────── */
+function DeliveryInfo({ order }) {
+  const status = order.status;
+
+  if (status === "cancelled") return null;
+
+  if (status === "new" || status === "design_review" || status === "in_production") {
+    return (
+      <div style={s.deliveryInfoBox}>
+        <span style={s.summaryLabel}>Delivery</span>
+        <p style={s.paymentStatusNote}>Your order has not shipped yet.</p>
+      </div>
+    );
+  }
+
+  if (status === "ready") {
+    return (
+      <div style={s.deliveryInfoBox}>
+        <span style={s.summaryLabel}>Delivery</span>
+        <p style={s.paymentStatusNote}>Your order is being prepared for delivery.</p>
+      </div>
+    );
+  }
+
+  // Shipped or Delivered — full tracking display. Delivered additionally
+  // shows the earlier Shipped date and "previous tracking information"
+  // (carrier/tracking/method above already cover that) per spec. Never
+  // invents a date — each row only renders when its timestamp is present.
+  // Task O1 correction: derived from the customer-safe tracking_status
+  // field, never a raw internal boolean.
+  const trackingUnavailable = order.tracking_status === "UNAVAILABLE";
+
+  return (
+    <div style={s.deliveryInfoBox}>
+      <span style={s.summaryLabel}>Delivery</span>
+      <div style={s.paymentInfoGrid}>
+        <div style={s.paymentInfoRow}>
+          <span style={s.summaryLabel}>Status</span>
+          <span style={s.paymentInfoValue}>
+            {status === "delivered" ? "Delivered" : "Shipped"}
+          </span>
+        </div>
+        {order.shipping_method && (
+          <div style={s.paymentInfoRow}>
+            <span style={s.summaryLabel}>Method</span>
+            <span style={s.paymentInfoValue}>
+              {order.shipping_method_display_label || order.shipping_method}
+            </span>
+          </div>
+        )}
+        {order.carrier_name && (
+          <div style={s.paymentInfoRow}>
+            <span style={s.summaryLabel}>Carrier</span>
+            <span style={s.paymentInfoValue}>{order.carrier_name}</span>
+          </div>
+        )}
+        {order.tracking_number && (
+          <div style={s.paymentInfoRow}>
+            <span style={s.summaryLabel}>Tracking Number</span>
+            <span style={s.paymentInfoValue}>{order.tracking_number}</span>
+          </div>
+        )}
+        {order.estimated_delivery_date && (
+          <div style={s.paymentInfoRow}>
+            <span style={s.summaryLabel}>Estimated Delivery</span>
+            <span style={s.paymentInfoValue}>{formatDateOnly(order.estimated_delivery_date)}</span>
+          </div>
+        )}
+        {order.shipped_at && (
+          <div style={s.paymentInfoRow}>
+            <span style={s.summaryLabel}>Shipped</span>
+            <span style={s.paymentInfoValue}>{formatStageDate(order.shipped_at)}</span>
+          </div>
+        )}
+        {status === "delivered" && order.delivered_at && (
+          <div style={s.paymentInfoRow}>
+            <span style={s.summaryLabel}>Delivered</span>
+            <span style={s.paymentInfoValue}>{formatStageDate(order.delivered_at)}</span>
+          </div>
+        )}
+      </div>
+
+      {trackingUnavailable && (
+        <p style={s.paymentStatusNote}>Tracking is not available for this shipment.</p>
+      )}
+
+      {order.safe_tracking_url && (
+        <a
+          href={order.safe_tracking_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={s.trackPackageLink}
+        >
+          Track Package →
+        </a>
+      )}
+    </div>
+  );
+}
+
 function OrderCard({ order }) {
   const [expanded, setExpanded] = useState(false);
   const items = Array.isArray(order.items) ? order.items : [];
@@ -219,6 +325,9 @@ function OrderCard({ order }) {
 
       {/* ── Payment ── */}
       <PaymentInfo order={order} />
+
+      {/* ── Delivery ── */}
+      <DeliveryInfo order={order} />
 
       {/* ── Items Accordion ── */}
       {items.length > 0 && (
@@ -626,6 +735,24 @@ const s = {
     fontFamily: "sans-serif",
     fontStyle: "italic",
     lineHeight: "1.5",
+  },
+
+  // Delivery info (Task O1)
+  deliveryInfoBox: {
+    marginTop: "6px",
+    marginBottom: "6px",
+    paddingTop: "16px",
+    borderTop: "1px solid #f0ece6",
+  },
+  trackPackageLink: {
+    display: "inline-block",
+    marginTop: "12px",
+    fontSize: "0.75rem",
+    letterSpacing: "0.06em",
+    textTransform: "uppercase",
+    color: "#1a6fb5",
+    fontFamily: "sans-serif",
+    textDecoration: "underline",
   },
 
   // Progress timeline (Task M1)
