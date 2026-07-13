@@ -5,6 +5,7 @@ const pool = require("../config/db");
 
 const { productSchema } = require("../validation/product.validation");
 const { attachImageData } = require("../utils/productImages");
+const { computeAvailabilityStatus } = require("../utils/inventory");
 
 router.get("/", async (req, res) => {
   try {
@@ -99,6 +100,88 @@ router.get("/:id", async (req, res) => {
     } catch (err) {
       console.error("Error fetching product sizes:", err.message);
       res.status(500).json({ error: "Failed to fetch product sizes" });
+    }
+  });
+
+  // Task K3: customer-safe inventory availability — never exposes an exact
+  // stock number, only a computed status label, and (for VARIANT products)
+  // which active color+size combinations are available at all.
+  router.get("/:id/availability", async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const productResult = await pool.query(
+        "SELECT id, stock_quantity, inventory_mode FROM products WHERE id = $1",
+        [id]
+      );
+
+      if (productResult.rows.length === 0) {
+        return res.status(404).json({ error: "Product not found" });
+      }
+
+      const product = productResult.rows[0];
+
+      if (product.inventory_mode !== "VARIANT") {
+        return res.status(200).json({
+          inventory_mode: "GENERAL",
+          availability_status: computeAvailabilityStatus(product.stock_quantity),
+        });
+      }
+
+      const [colorsResult, sizesResult, variantsResult] = await Promise.all([
+        pool.query(
+          "SELECT id, color_name, color_hex, sort_order FROM customizable_product_colors WHERE product_id = $1 AND is_active = true ORDER BY sort_order ASC, id ASC",
+          [id]
+        ),
+        pool.query(
+          "SELECT id, size_label, sort_order FROM customizable_product_sizes WHERE product_id = $1 AND is_active = true ORDER BY sort_order ASC, id ASC",
+          [id]
+        ),
+        pool.query(
+          "SELECT color_id, size_id, stock_quantity FROM product_inventory_variants WHERE product_id = $1",
+          [id]
+        ),
+      ]);
+
+      const colors = colorsResult.rows;
+      const sizes = sizesResult.rows;
+      const activeColorIds = new Set(colors.map((c) => c.id));
+      const activeSizeIds = new Set(sizes.map((s) => s.id));
+
+      // Only rows whose color/size are both still active count — a row
+      // left over from a deactivated color/size never appears here (K1's
+      // completeness rule: inactive configuration doesn't count).
+      const stockByKey = new Map();
+      for (const v of variantsResult.rows) {
+        if (v.color_id !== null && !activeColorIds.has(v.color_id)) continue;
+        if (!activeSizeIds.has(v.size_id)) continue;
+        const key = `${v.color_id === null ? "null" : v.color_id}:${v.size_id}`;
+        stockByKey.set(key, v.stock_quantity);
+      }
+
+      const expectedPairs =
+        colors.length > 0
+          ? colors.flatMap((c) => sizes.map((s) => [c.id, s.id]))
+          : sizes.map((s) => [null, s.id]);
+
+      const combinations = expectedPairs.map(([colorId, sizeId]) => {
+        const key = `${colorId === null ? "null" : colorId}:${sizeId}`;
+        const stockQuantity = stockByKey.has(key) ? stockByKey.get(key) : 0;
+        return {
+          color_id: colorId,
+          size_id: sizeId,
+          is_available: stockQuantity > 0,
+          availability_status: computeAvailabilityStatus(stockQuantity),
+        };
+      });
+
+      res.status(200).json({
+        inventory_mode: "VARIANT",
+        combinations,
+      });
+    } catch (err) {
+      console.error("Error fetching product availability:", err.message);
+      res.status(500).json({ error: "Failed to fetch product availability" });
     }
   });
 

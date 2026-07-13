@@ -9,6 +9,10 @@ import {
   getCompatibleCollections,
   getAssignedActiveOption,
 } from "../utils/designCompatibility";
+import {
+  availabilityLabel,
+  getCombinationAvailability,
+} from "../utils/inventoryAvailability";
 
 // /api/customization/products and /api/customization/products/:id do not
 // currently select stock_quantity, so this only takes effect once that field
@@ -198,14 +202,65 @@ function CustomizePage() {
     }
   }
 
+  // Task K3: exact color+size stock combination — only meaningful in
+  // Variant mode. General mode never restricts a combination this way
+  // (whole-product stock controls availability, unchanged).
+  const isVariantInventory = config?.inventory?.inventory_mode === "VARIANT";
+
+  function comboAvailable(colorId, sizeId) {
+    if (!isVariantInventory) return true;
+    return getCombinationAvailability(config.inventory.combinations, colorId, sizeId)
+      .is_available;
+  }
+
+  // A color is only fully disabled when NONE of its active sizes are in
+  // stock — never merely because the CURRENTLY selected size happens to be
+  // unavailable for it. Selecting such a color is exactly what should let
+  // the customer discover its other available sizes, so it must stay
+  // clickable as long as at least one size works for it.
+  function colorHasAnyAvailableSize(colorId) {
+    if (!isVariantInventory) return true;
+    const productSizes = config?.sizes || [];
+    if (productSizes.length === 0) return true;
+    return productSizes.some((size) => comboAvailable(colorId, size.id));
+  }
+
   function handleColorSelect(color) {
     setSelectedColor(color);
-    preserveOrClearDesignFor(color, selectedSize);
+
+    // Stock availability is checked first and independently of design
+    // compatibility — if the new color makes the previously selected size
+    // out of stock, the size clears before design compatibility is
+    // (re)evaluated below, so preserveOrClearDesignFor always sees a
+    // stock-valid size (or null), never a stale out-of-stock one.
+    let effectiveSize = selectedSize;
+    if (
+      isVariantInventory &&
+      selectedSize &&
+      !comboAvailable(color?.id ?? null, selectedSize.id)
+    ) {
+      effectiveSize = null;
+      setSelectedSize(null);
+    }
+
+    preserveOrClearDesignFor(color, effectiveSize);
   }
 
   function handleSizeSelect(size) {
     setSelectedSize(size);
-    preserveOrClearDesignFor(selectedColor, size);
+
+    let effectiveColor = selectedColor;
+    if (
+      isVariantInventory &&
+      config?.colors?.length > 0 &&
+      selectedColor &&
+      !comboAvailable(selectedColor.id, size.id)
+    ) {
+      effectiveColor = null;
+      setSelectedColor(null);
+    }
+
+    preserveOrClearDesignFor(effectiveColor, size);
   }
 
   const product = config?.product;
@@ -325,8 +380,19 @@ function CustomizePage() {
       return;
     }
 
-    if (isProductOutOfStock(product)) {
+    if (!isVariantInventory && isProductOutOfStock(product)) {
       alert("This product is out of stock.");
+      return;
+    }
+
+    // Task K3: never allow an unavailable combination into Cart — the
+    // backend re-validates this independently, but the customer should
+    // never even reach a rejected request here.
+    if (
+      isVariantInventory &&
+      !comboAvailable(selectedColor?.id ?? null, selectedSize?.id)
+    ) {
+      alert("This color and size combination is out of stock.");
       return;
     }
 
@@ -583,21 +649,34 @@ function CustomizePage() {
               <div style={styles.controlBlock}>
                 <label style={styles.label}>Color</label>
                 <div style={styles.swatches}>
-                  {config?.colors?.map((c) => (
-                    <button
-                      key={c.id}
-                      onClick={() => handleColorSelect(c)}
-                      title={c.color_name}
-                      style={{
-                        ...styles.swatch,
-                        background: c.color_hex || "#ccc",
-                        border:
-                          selectedColor?.id === c.id
-                            ? "3px solid #111"
-                            : "1px solid #ddd",
-                      }}
-                    />
-                  ))}
+                  {config?.colors?.map((c) => {
+                    const colorDisabled = !colorHasAnyAvailableSize(c.id);
+
+                    // Never both at once: a disabled color is never rendered
+                    // as "selected" even if selectedColor somehow still
+                    // points at it.
+                    const isSelected = !colorDisabled && selectedColor?.id === c.id;
+
+                    return (
+                      <button
+                        key={c.id}
+                        onClick={() => handleColorSelect(c)}
+                        disabled={colorDisabled}
+                        title={
+                          colorDisabled
+                            ? `${c.color_name} — Out of stock`
+                            : c.color_name
+                        }
+                        style={{
+                          ...styles.swatch,
+                          background: c.color_hex || "#ccc",
+                          border: isSelected ? "3px solid #111" : "1px solid #ddd",
+                          opacity: colorDisabled ? 0.3 : 1,
+                          cursor: colorDisabled ? "not-allowed" : "pointer",
+                        }}
+                      />
+                    );
+                  })}
                 </div>
                 <p style={styles.muted}>{selectedColor?.color_name}</p>
               </div>
@@ -605,20 +684,47 @@ function CustomizePage() {
               <div style={styles.controlBlock}>
                 <label style={styles.label}>Size</label>
                 <div style={styles.sizeGrid}>
-                  {config?.sizes?.map((s) => (
-                    <button
-                      key={s.id}
-                      onClick={() => handleSizeSelect(s)}
-                      style={{
-                        ...styles.sizeBtn,
-                        background: selectedSize?.id === s.id ? "#111" : "#fff",
-                        color: selectedSize?.id === s.id ? "#fff" : "#111",
-                      }}
-                    >
-                      {s.size_label}
-                    </button>
-                  ))}
+                  {config?.sizes?.map((s) => {
+                    const sizeDisabled =
+                      isVariantInventory &&
+                      selectedColor &&
+                      !comboAvailable(selectedColor.id, s.id);
+
+                    const isSelected = !sizeDisabled && selectedSize?.id === s.id;
+
+                    return (
+                      <button
+                        key={s.id}
+                        onClick={() => handleSizeSelect(s)}
+                        disabled={sizeDisabled}
+                        title={sizeDisabled ? "Out of stock" : undefined}
+                        style={{
+                          ...styles.sizeBtn,
+                          background: isSelected ? "#111" : "#fff",
+                          color: isSelected ? "#fff" : "#111",
+                          opacity: sizeDisabled ? 0.35 : 1,
+                          cursor: sizeDisabled ? "not-allowed" : "pointer",
+                        }}
+                      >
+                        {s.size_label}
+                      </button>
+                    );
+                  })}
                 </div>
+                {isVariantInventory &&
+                  selectedColor &&
+                  selectedSize &&
+                  comboAvailable(selectedColor.id, selectedSize.id) && (
+                    <p style={styles.muted}>
+                      {availabilityLabel(
+                        getCombinationAvailability(
+                          config.inventory.combinations,
+                          selectedColor.id,
+                          selectedSize.id
+                        ).availability_status
+                      )}
+                    </p>
+                  )}
               </div>
 
               {showDesignSection && (
@@ -777,21 +883,32 @@ function CustomizePage() {
                 <strong>${totalPrice.toFixed(2)}</strong>
               </div>
 
-              <button
-                onClick={handleAddToCart}
-                disabled={adding || isProductOutOfStock(product)}
-                style={{
-                  ...styles.addBtn,
-                  opacity: adding || isProductOutOfStock(product) ? 0.6 : 1,
-                  cursor: isProductOutOfStock(product) ? "not-allowed" : "pointer",
-                }}
-              >
-                {isProductOutOfStock(product)
-                  ? "Out of Stock"
-                  : adding
-                  ? "Adding..."
-                  : "Add Customized Hoodie"}
-              </button>
+              {(() => {
+                const generalOutOfStock =
+                  !isVariantInventory && isProductOutOfStock(product);
+                const comboOutOfStock =
+                  isVariantInventory &&
+                  !comboAvailable(selectedColor?.id ?? null, selectedSize?.id);
+                const outOfStock = generalOutOfStock || comboOutOfStock;
+
+                return (
+                  <button
+                    onClick={handleAddToCart}
+                    disabled={adding || outOfStock}
+                    style={{
+                      ...styles.addBtn,
+                      opacity: adding || outOfStock ? 0.6 : 1,
+                      cursor: outOfStock ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    {outOfStock
+                      ? "Out of Stock"
+                      : adding
+                      ? "Adding..."
+                      : "Add Customized Hoodie"}
+                  </button>
+                );
+              })()}
 
               <p style={styles.note}>
                 This is a visual preview. Final placement may be adjusted by the

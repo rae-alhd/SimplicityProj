@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import API_BASE from "../config/api";
+import { availabilityLabel } from "../utils/inventoryAvailability";
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
@@ -320,11 +321,17 @@ function CartItem({ item, onChangeQty, onRemove }) {
   const [minusHover, setMinusHover] = useState(false);
   const [plusHover, setPlusHover] = useState(false);
 
+  // Task K3: VARIANT items never carry an exact quantity — is_available /
+  // availability_status (additive from GET /cart) are the only signal.
+  // GENERAL behavior is unchanged: still derived from stock_quantity.
+  const isVariant = item.inventory_mode === "VARIANT";
   const stockQuantity = Number(item.stock_quantity || 0);
-  const isOutOfStock = stockQuantity <= 0;
-  const isMaxStock = !isOutOfStock && item.quantity >= stockQuantity;
+  const isOutOfStock = isVariant ? !item.is_available : stockQuantity <= 0;
+  const isMaxStock = !isVariant && !isOutOfStock && item.quantity >= stockQuantity;
   const isPlusDisabled = isOutOfStock || isMaxStock;
-  const availability = getStockAvailability(stockQuantity);
+  const availability = isVariant
+    ? availabilityLabel(item.availability_status)
+    : getStockAvailability(stockQuantity);
 
   return (
     <div style={styles.card}>
@@ -532,15 +539,22 @@ function Cart() {
       const token = localStorage.getItem("token");
 
       const item = cart.find((i) => i.id === id);
-      const stockQuantity = Number(item.stock_quantity || 0);
       const newQuantity = Math.max(1, item.quantity + delta);
 
-      if (delta > 0 && newQuantity > stockQuantity) {
-        alert(`Only ${stockQuantity} item(s) available in stock.`);
-        return;
+      // Task K3: GENERAL keeps the existing client-side pre-check using the
+      // known stock number. VARIANT never exposes an exact quantity to the
+      // customer, so there's nothing to pre-check here — the backend's own
+      // validation is the only guard, and its rejection message (if any) is
+      // surfaced below instead of a client-computed one.
+      if (item.inventory_mode !== "VARIANT") {
+        const stockQuantity = Number(item.stock_quantity || 0);
+        if (delta > 0 && newQuantity > stockQuantity) {
+          alert(`Only ${stockQuantity} item(s) available in stock.`);
+          return;
+        }
       }
 
-      await fetch(`${API_BASE}/cart/${id}`, {
+      const res = await fetch(`${API_BASE}/cart/${id}`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
@@ -548,9 +562,15 @@ function Cart() {
         },
         body: JSON.stringify({ quantity: newQuantity }),
       });
-  
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        alert(data?.error || "Could not update quantity.");
+        return;
+      }
+
       await fetchCart();
-  
+
     } catch (err) {
       console.error("Update error:", err);
     }

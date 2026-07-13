@@ -6,6 +6,7 @@ const {
   groupImagesByProduct,
   resolveMainImageUrl,
 } = require("../utils/productImages");
+const { resolveInventoryVariant } = require("../utils/inventory");
 
 /* ─────────────────────────────────────────────
    HELPER: admin-only guard
@@ -342,6 +343,7 @@ const cartResult = await client.query(
     p.customization_extra_price,
     p.name AS product_name,
     p.is_active,
+    p.inventory_mode,
 
     co.option_label AS customization_label,
     co.extra_price AS customization_option_extra_price,
@@ -400,11 +402,81 @@ const cartResult = await client.query(
       designSnapshotByCartItemIndex.set(i, validation.snapshot);
     }
 
-    // 1.5 Aggregate cart quantity per product (same product can appear as
-    // multiple cart rows with different size/color/customization/design,
-    // but they all draw from the same products.stock_quantity pool).
+    // 1.45 Task K3: resolve + lock the exact product_inventory_variants row
+    // for every cart item belonging to a VARIANT-mode product. Runs after
+    // design revalidation so a design-linked item's color has already been
+    // re-anchored to its variant's canonical color. Never trusts the Cart
+    // row's stored color/size alone — always re-resolved fresh against
+    // currently ACTIVE colors/sizes, exactly like the design revalidation
+    // above. A missing row (incomplete matrix) is rejected here too — it
+    // never silently falls back to General stock.
+    const inventorySnapshotByCartItemIndex = new Map();
+    const requestedQtyByVariantId = new Map();
+
+    for (let i = 0; i < cartItems.length; i++) {
+      const item = cartItems[i];
+
+      if (item.inventory_mode !== "VARIANT") continue;
+
+      const resolution = await resolveInventoryVariant(
+        client,
+        item.product_id,
+        item.color,
+        item.size
+      );
+
+      if (!resolution.ok) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: "This color and size combination is out of stock.",
+        });
+      }
+
+      inventorySnapshotByCartItemIndex.set(i, {
+        inventory_mode: "VARIANT",
+        inventory_variant_id: resolution.variant.id,
+      });
+
+      requestedQtyByVariantId.set(
+        resolution.variant.id,
+        (requestedQtyByVariantId.get(resolution.variant.id) || 0) +
+          Number(item.quantity || 0)
+      );
+    }
+
+    // Lock every distinct variant row FOR UPDATE and re-check its freshest
+    // stock_quantity — the earlier resolve above is not trusted alone,
+    // same reasoning as the General stock lock below.
+    for (const [variantId, requestedQuantity] of requestedQtyByVariantId.entries()) {
+      const lockResult = await client.query(
+        "SELECT stock_quantity FROM product_inventory_variants WHERE id = $1 FOR UPDATE",
+        [variantId]
+      );
+
+      if (lockResult.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: "This color and size combination is out of stock.",
+        });
+      }
+
+      const availableStock = Number(lockResult.rows[0].stock_quantity || 0);
+
+      if (availableStock <= 0 || requestedQuantity > availableStock) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: "Only the available quantity can be added.",
+        });
+      }
+    }
+
+    // 1.5 Aggregate cart quantity per product for GENERAL-mode items only —
+    // VARIANT items were already resolved to their own independent stock
+    // pools above and must never be folded into this whole-product total.
     const quantityByProduct = new Map();
     for (const item of cartItems) {
+      if (item.inventory_mode === "VARIANT") continue;
+
       const current = quantityByProduct.get(item.product_id) || 0;
       quantityByProduct.set(
         item.product_id,
@@ -470,6 +542,14 @@ const cartResult = await client.query(
 for (let i = 0; i < cartItems.length; i++) {
   const item = cartItems[i];
   const designSnapshot = designSnapshotByCartItemIndex.get(i) || null;
+  // Task K3: permanent record of which inventory mechanism controlled this
+  // line at checkout — never re-derived from the product's current
+  // inventory_mode later (which may have changed since), so cancellation
+  // always reverses stock the same way it was deducted.
+  const inventorySnapshot = inventorySnapshotByCartItemIndex.get(i) || {
+    inventory_mode: "GENERAL",
+    inventory_variant_id: null,
+  };
 
   await client.query(
     `
@@ -493,9 +573,11 @@ for (let i = 0; i < cartItems.length; i++) {
       design_image_url,
       design_variant_id,
       design_color_id_snapshot,
-      design_preview_image_url_snapshot
+      design_preview_image_url_snapshot,
+      inventory_mode_snapshot,
+      inventory_variant_id
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
     `,
     [
       order.id,
@@ -519,15 +601,29 @@ for (let i = 0; i < cartItems.length; i++) {
       designSnapshot?.design_variant_id || null,
       designSnapshot?.design_color_id || null,
       designSnapshot?.design_preview_image_url || null,
+
+      inventorySnapshot.inventory_mode,
+      inventorySnapshot.inventory_variant_id,
     ]
   );
 }
 
-    // 4.5 Reduce stock now that the order and its items were created successfully
+    // 4.5 Reduce stock now that the order and its items were created
+    // successfully. GENERAL products deduct from products.stock_quantity as
+    // before; VARIANT products deduct from their own resolved+locked
+    // product_inventory_variants row instead — never both, never the wrong
+    // one.
     for (const [productId, requestedQuantity] of quantityByProduct.entries()) {
       await client.query(
         "UPDATE products SET stock_quantity = stock_quantity - $1 WHERE id = $2",
         [requestedQuantity, productId]
+      );
+    }
+
+    for (const [variantId, requestedQuantity] of requestedQtyByVariantId.entries()) {
+      await client.query(
+        "UPDATE product_inventory_variants SET stock_quantity = stock_quantity - $1, updated_at = now() WHERE id = $2",
+        [requestedQuantity, variantId]
       );
     }
 
@@ -664,6 +760,12 @@ router.get("/", authMiddleware, adminOnly, async (req, res) => {
    Admin only — update order status.
    Body: { status: "pending"|"confirmed"|"delivered"|"cancelled" }
 ───────────────────────────────────────────── */
+// Thrown when a cancellation needs to restock an item whose GENERAL product
+// or VARIANT inventory row no longer exists. Caught below to roll back the
+// whole transaction and return a controlled 400 instead of a generic 500 —
+// distinct from any other unexpected error.
+class MissingInventoryForCancellationError extends Error {}
+
 router.patch("/:id/status", authMiddleware, adminOnly, async (req, res) => {
   const orderId = parseInt(req.params.id);
   const { status } = req.body;
@@ -694,6 +796,75 @@ router.patch("/:id/status", authMiddleware, adminOnly, async (req, res) => {
 
     const currentOrder = orderResult.rows[0];
 
+    // Restock only on the transition into cancelled, and only once ever
+    // for this order — reverting to another status and cancelling again
+    // must not restore stock a second time. orders.stock_restored is the
+    // single whole-order guard for this, unchanged by Task K3.
+    const needsRestock = status === "cancelled" && !currentOrder.stock_restored;
+
+    const quantityByProduct = new Map();
+    const quantityByVariantId = new Map();
+
+    if (needsRestock) {
+      // ── VALIDATE + LOCK EVERY STOCK SOURCE FIRST — no write happens
+      // until every item this cancellation needs to restock has been
+      // confirmed to exist and locked. Legacy order_items (placed before
+      // inventory_mode_snapshot existed) have it NULL — treated identically
+      // to 'GENERAL' so every pre-existing order restocks exactly as it
+      // always has.
+      const itemsResult = await client.query(
+        `SELECT product_id, quantity, inventory_mode_snapshot, inventory_variant_id
+         FROM order_items WHERE order_id = $1`,
+        [orderId]
+      );
+
+      for (const item of itemsResult.rows) {
+        if (item.inventory_mode_snapshot === "VARIANT") {
+          if (item.inventory_variant_id === null) {
+            // The exact variant row this order deducted from was deleted
+            // since checkout — never restore to products.stock_quantity or
+            // to a different variant, never skip it either. Abort the
+            // whole cancellation instead.
+            throw new MissingInventoryForCancellationError();
+          }
+
+          quantityByVariantId.set(
+            item.inventory_variant_id,
+            (quantityByVariantId.get(item.inventory_variant_id) || 0) +
+              Number(item.quantity || 0)
+          );
+        } else {
+          quantityByProduct.set(
+            item.product_id,
+            (quantityByProduct.get(item.product_id) || 0) +
+              Number(item.quantity || 0)
+          );
+        }
+      }
+
+      for (const productId of quantityByProduct.keys()) {
+        const productCheck = await client.query(
+          "SELECT id FROM products WHERE id = $1 FOR UPDATE",
+          [productId]
+        );
+        if (productCheck.rows.length === 0) {
+          throw new MissingInventoryForCancellationError();
+        }
+      }
+
+      for (const variantId of quantityByVariantId.keys()) {
+        const variantCheck = await client.query(
+          "SELECT id FROM product_inventory_variants WHERE id = $1 FOR UPDATE",
+          [variantId]
+        );
+        if (variantCheck.rows.length === 0) {
+          throw new MissingInventoryForCancellationError();
+        }
+      }
+    }
+
+    // ── Every required stock source is confirmed to exist and locked (or
+    // no restock is needed at all) — only now does anything get written.
     const updateResult = await client.query(
       `UPDATE orders SET status = $1 WHERE id = $2 RETURNING *`,
       [status, orderId]
@@ -711,28 +882,18 @@ router.patch("/:id/status", authMiddleware, adminOnly, async (req, res) => {
       );
     }
 
-    // Restock only on the transition into cancelled, and only once ever
-    // for this order — reverting to another status and cancelling again
-    // must not restore stock a second time.
-    if (status === "cancelled" && !currentOrder.stock_restored) {
-      const itemsResult = await client.query(
-        `SELECT product_id, quantity FROM order_items WHERE order_id = $1`,
-        [orderId]
-      );
-
-      const quantityByProduct = new Map();
-      for (const item of itemsResult.rows) {
-        const current = quantityByProduct.get(item.product_id) || 0;
-        quantityByProduct.set(
-          item.product_id,
-          current + Number(item.quantity || 0)
-        );
-      }
-
+    if (needsRestock) {
       for (const [productId, restoredQuantity] of quantityByProduct.entries()) {
         await client.query(
           `UPDATE products SET stock_quantity = stock_quantity + $1 WHERE id = $2`,
           [restoredQuantity, productId]
+        );
+      }
+
+      for (const [variantId, restoredQuantity] of quantityByVariantId.entries()) {
+        await client.query(
+          `UPDATE product_inventory_variants SET stock_quantity = stock_quantity + $1, updated_at = now() WHERE id = $2`,
+          [restoredQuantity, variantId]
         );
       }
 
@@ -748,6 +909,17 @@ router.patch("/:id/status", authMiddleware, adminOnly, async (req, res) => {
     res.json({ message: "Order status updated.", order });
   } catch (err) {
     await client.query("ROLLBACK");
+
+    if (err instanceof MissingInventoryForCancellationError) {
+      console.error(
+        `Order ${orderId}: cancellation aborted — one of its inventory records no longer exists. No stock or order status was changed.`
+      );
+      return res.status(400).json({
+        error:
+          "This order cannot be cancelled automatically because one of its inventory records no longer exists. No stock or order status was changed.",
+      });
+    }
+
     console.error("Update order status error:", err);
     res.status(500).json({ error: "Failed to update order status." });
   } finally {

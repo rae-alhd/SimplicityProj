@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
 const { attachImageData } = require("../utils/productImages");
+const { computeAvailabilityStatus } = require("../utils/inventory");
 
 // GET /api/customization/products
 // Get all products that are customizable
@@ -66,7 +67,8 @@ router.get("/products/:productId", async (req, res) => {
         image_url,
         is_customizable,
         customization_extra_price,
-        customization_note
+        customization_note,
+        inventory_mode
       FROM products
       WHERE id = $1
         AND is_customizable = true
@@ -280,6 +282,54 @@ router.get("/products/:productId", async (req, res) => {
       designs: designsByCollection[collection.id] || [],
     }));
 
+    // Task K3: same customer-safe inventory shape as GET /api/products/:id/
+    // availability — never an exact quantity, only a status label (GENERAL)
+    // or per-active-combination availability (VARIANT).
+    let inventory;
+    if (productWithImages.inventory_mode !== "VARIANT") {
+      inventory = {
+        inventory_mode: "GENERAL",
+        availability_status: computeAvailabilityStatus(
+          productWithImages.stock_quantity
+        ),
+      };
+    } else {
+      const inventoryVariantsResult = await pool.query(
+        "SELECT color_id, size_id, stock_quantity FROM product_inventory_variants WHERE product_id = $1",
+        [productId]
+      );
+
+      const activeColorIds = new Set(colorsResult.rows.map((c) => c.id));
+      const activeSizeIds = new Set(sizesResult.rows.map((s) => s.id));
+
+      const stockByKey = new Map();
+      for (const v of inventoryVariantsResult.rows) {
+        if (v.color_id !== null && !activeColorIds.has(v.color_id)) continue;
+        if (!activeSizeIds.has(v.size_id)) continue;
+        const key = `${v.color_id === null ? "null" : v.color_id}:${v.size_id}`;
+        stockByKey.set(key, v.stock_quantity);
+      }
+
+      const expectedPairs =
+        colorsResult.rows.length > 0
+          ? colorsResult.rows.flatMap((c) => sizesResult.rows.map((s) => [c.id, s.id]))
+          : sizesResult.rows.map((s) => [null, s.id]);
+
+      inventory = {
+        inventory_mode: "VARIANT",
+        combinations: expectedPairs.map(([colorId, sizeId]) => {
+          const key = `${colorId === null ? "null" : colorId}:${sizeId}`;
+          const stockQuantity = stockByKey.has(key) ? stockByKey.get(key) : 0;
+          return {
+            color_id: colorId,
+            size_id: sizeId,
+            is_available: stockQuantity > 0,
+            availability_status: computeAvailabilityStatus(stockQuantity),
+          };
+        }),
+      };
+    }
+
     res.json({
       product: productWithImages,
       colors: colorsResult.rows,
@@ -287,6 +337,7 @@ router.get("/products/:productId", async (req, res) => {
       options: optionsResult.rows,
       examples: examplesResult.rows,
       collections,
+      inventory,
     });
   } catch (err) {
     console.error("Get customization product config error:", err);

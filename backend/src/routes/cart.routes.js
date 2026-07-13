@@ -6,6 +6,10 @@ const {
   groupImagesByProduct,
   resolveMainImageUrl,
 } = require("../utils/productImages");
+const {
+  computeAvailabilityStatus,
+  resolveInventoryVariant,
+} = require("../utils/inventory");
 
 // ✅ TEST
 router.get("/test", (req, res) => {
@@ -56,7 +60,8 @@ router.get("/", authMiddleware, async (req, res) => {
 ) AS price,
 products.customization_extra_price,
 products.image_url,
-products.stock_quantity
+products.stock_quantity,
+products.inventory_mode
       FROM cart_items
       JOIN products
         ON cart_items.product_id = products.id
@@ -112,6 +117,114 @@ products.stock_quantity
         row.id,
       ])
     );
+
+    // Task K3: batched inventory availability for every VARIANT-mode
+    // product's cart rows — resolved fresh by color/size NAME every time
+    // (never a cached id), so a color/size renamed or deactivated since
+    // this item was added is reflected immediately, and never exposes an
+    // exact stock number, only the computed customer-safe status.
+    const variantProductIds = [
+      ...new Set(
+        cartRows
+          .filter((row) => row.inventory_mode === "VARIANT")
+          .map((row) => row.product_id)
+      ),
+    ];
+
+    const [activeColorsResult, activeSizesResult, inventoryVariantsResult] =
+      await Promise.all([
+        pool.query(
+          "SELECT id, product_id, color_name FROM customizable_product_colors WHERE product_id = ANY($1::int[]) AND is_active = true",
+          [variantProductIds]
+        ),
+        pool.query(
+          "SELECT id, product_id, size_label FROM customizable_product_sizes WHERE product_id = ANY($1::int[]) AND is_active = true",
+          [variantProductIds]
+        ),
+        pool.query(
+          "SELECT product_id, color_id, size_id, stock_quantity FROM product_inventory_variants WHERE product_id = ANY($1::int[])",
+          [variantProductIds]
+        ),
+      ]);
+
+    const activeColorsByProduct = new Map();
+    for (const c of activeColorsResult.rows) {
+      if (!activeColorsByProduct.has(c.product_id)) {
+        activeColorsByProduct.set(c.product_id, []);
+      }
+      activeColorsByProduct.get(c.product_id).push(c);
+    }
+
+    const activeSizesByProduct = new Map();
+    for (const sizeRow of activeSizesResult.rows) {
+      if (!activeSizesByProduct.has(sizeRow.product_id)) {
+        activeSizesByProduct.set(sizeRow.product_id, []);
+      }
+      activeSizesByProduct.get(sizeRow.product_id).push(sizeRow);
+    }
+
+    const inventoryStockByKey = new Map();
+    for (const v of inventoryVariantsResult.rows) {
+      const key = `${v.product_id}::${v.color_id === null ? "null" : v.color_id}::${v.size_id}`;
+      inventoryStockByKey.set(key, v.stock_quantity);
+    }
+
+    function computeCartRowAvailability(row) {
+      if (row.inventory_mode !== "VARIANT") {
+        return {
+          inventory_mode: "GENERAL",
+          is_available: Number(row.stock_quantity || 0) > 0,
+          availability_status: computeAvailabilityStatus(row.stock_quantity),
+        };
+      }
+
+      const productColors = activeColorsByProduct.get(row.product_id) || [];
+      const productSizes = activeSizesByProduct.get(row.product_id) || [];
+      const hasColors = productColors.length > 0;
+
+      let colorId = null;
+      if (hasColors) {
+        const normalizedColor = String(row.color || "").trim().toLowerCase();
+        const match = productColors.find(
+          (c) => c.color_name.trim().toLowerCase() === normalizedColor
+        );
+        if (!match) {
+          // The selected color is no longer active/valid for this product —
+          // unavailable, never falls back to guessing another one.
+          return {
+            inventory_mode: "VARIANT",
+            is_available: false,
+            availability_status: "OUT_OF_STOCK",
+          };
+        }
+        colorId = match.id;
+      }
+
+      const normalizedSize = String(row.size || "").trim().toLowerCase();
+      const sizeMatch = productSizes.find(
+        (s) => s.size_label.trim().toLowerCase() === normalizedSize
+      );
+      if (!sizeMatch) {
+        return {
+          inventory_mode: "VARIANT",
+          is_available: false,
+          availability_status: "OUT_OF_STOCK",
+        };
+      }
+
+      const key = `${row.product_id}::${colorId === null ? "null" : colorId}::${sizeMatch.id}`;
+      // Missing row (no combination saved yet) is treated as zero stock —
+      // an incomplete Variant matrix never falls back to General stock.
+      const stockQuantity = inventoryStockByKey.has(key)
+        ? inventoryStockByKey.get(key)
+        : 0;
+
+      return {
+        inventory_mode: "VARIANT",
+        is_available: stockQuantity > 0,
+        availability_status: computeAvailabilityStatus(stockQuantity),
+      };
+    }
 
     // Design-variant preview images (Task H1 image priority, tier 1/2):
     // batched in one query, never exposing inactive rows, exactly like the
@@ -178,6 +291,14 @@ products.stock_quantity
 
       return {
         ...row,
+        ...computeCartRowAvailability(row),
+        // Task K3: products.stock_quantity is meaningless once a product is
+        // VARIANT-mode (it's no longer the source of truth) — never leave a
+        // stale whole-product number sitting in the response where a
+        // customer could mistake it for this exact combination's stock.
+        // GENERAL items keep it exactly as before (needed by the existing
+        // quantity-stepper max-check).
+        stock_quantity: row.inventory_mode === "VARIANT" ? null : row.stock_quantity,
         design_main_preview_image_url: designMainPreviewImageUrl,
         main_image_url: mainImageUrl,
       };
@@ -213,12 +334,12 @@ router.post("/", authMiddleware, async (req, res) => {
       return res.status(400).json({ error: "product_id is required" });
     }
 
-    // 🔍 Stock guard: product must exist, be in stock, and have enough
-    // stock left to cover what's already in the cart plus this addition.
-    // Customized and non-customized cart items share the same product row,
-    // so stock is checked as a total across all cart_items for this product.
+    // 🔍 Product guard: must exist. GENERAL stock is checked immediately
+    // below (unchanged behavior); VARIANT stock is checked further down,
+    // after color/size (and any design variant) have been resolved to
+    // their final canonical values — Task K3.
     const productResult = await pool.query(
-      "SELECT stock_quantity FROM products WHERE id = $1",
+      "SELECT stock_quantity, inventory_mode FROM products WHERE id = $1",
       [product_id]
     );
 
@@ -226,29 +347,36 @@ router.post("/", authMiddleware, async (req, res) => {
       return res.status(404).json({ error: "Product not found" });
     }
 
-    const stockQuantity = Number(productResult.rows[0].stock_quantity || 0);
+    const inventoryMode = productResult.rows[0].inventory_mode;
 
-    if (stockQuantity <= 0) {
-      return res.status(400).json({ error: "This product is out of stock." });
-    }
+    if (inventoryMode !== "VARIANT") {
+      // Existing GENERAL behavior, unchanged: customized and non-customized
+      // cart items share the same product row, so stock is checked as a
+      // total across all cart_items for this product.
+      const stockQuantity = Number(productResult.rows[0].stock_quantity || 0);
 
-    const existingQtyResult = await pool.query(
-      `
-      SELECT COALESCE(SUM(quantity), 0) AS total_quantity
-      FROM cart_items
-      WHERE user_id = $1 AND product_id = $2
-      `,
-      [user_id, product_id]
-    );
-    const existingCartQuantity = Number(
-      existingQtyResult.rows[0].total_quantity || 0
-    );
+      if (stockQuantity <= 0) {
+        return res.status(400).json({ error: "This product is out of stock." });
+      }
 
-    if (existingCartQuantity + qty > stockQuantity) {
-      const remaining = Math.max(stockQuantity - existingCartQuantity, 0);
-      return res.status(400).json({
-        error: `Only ${remaining} item(s) available in stock.`,
-      });
+      const existingQtyResult = await pool.query(
+        `
+        SELECT COALESCE(SUM(quantity), 0) AS total_quantity
+        FROM cart_items
+        WHERE user_id = $1 AND product_id = $2
+        `,
+        [user_id, product_id]
+      );
+      const existingCartQuantity = Number(
+        existingQtyResult.rows[0].total_quantity || 0
+      );
+
+      if (existingCartQuantity + qty > stockQuantity) {
+        const remaining = Math.max(stockQuantity - existingCartQuantity, 0);
+        return res.status(400).json({
+          error: `Only ${remaining} item(s) available in stock.`,
+        });
+      }
     }
 
     // 🔍 Normalize design_id: missing/null/undefined/"" -> null, otherwise must be a valid number
@@ -443,6 +571,57 @@ router.post("/", authMiddleware, async (req, res) => {
       }
     }
 
+    // 🔍 Task K3: VARIANT stock guard — runs after design resolution above,
+    // using the FINAL canonical resolvedColor/resolvedSize (never the raw
+    // submitted strings), so a design-linked item is checked against the
+    // exact color its variant actually belongs to. Existing quantity is
+    // aggregated only across cart rows resolving to this SAME combination —
+    // unlike GENERAL, different colors/sizes of a VARIANT product draw from
+    // independent stock pools, never a shared per-product total.
+    if (inventoryMode === "VARIANT") {
+      const resolution = await resolveInventoryVariant(
+        pool,
+        product_id,
+        resolvedColor,
+        resolvedSize
+      );
+
+      if (!resolution.ok) {
+        return res.status(400).json({
+          error: "This color and size combination is out of stock.",
+        });
+      }
+
+      const variantStock = Number(resolution.variant.stock_quantity || 0);
+
+      if (variantStock <= 0) {
+        return res.status(400).json({
+          error: "This color and size combination is out of stock.",
+        });
+      }
+
+      const existingVariantQtyResult = await pool.query(
+        `
+        SELECT COALESCE(SUM(quantity), 0) AS total_quantity
+        FROM cart_items
+        WHERE user_id = $1
+          AND product_id = $2
+          AND LOWER(TRIM(color)) = LOWER(TRIM($3))
+          AND COALESCE(LOWER(TRIM(size)), '') = COALESCE(LOWER(TRIM($4)), '')
+        `,
+        [user_id, product_id, resolvedColor || "", resolvedSize]
+      );
+      const existingVariantQuantity = Number(
+        existingVariantQtyResult.rows[0].total_quantity || 0
+      );
+
+      if (existingVariantQuantity + qty > variantStock) {
+        return res.status(400).json({
+          error: "Only the available quantity can be added.",
+        });
+      }
+    }
+
     // 🔍 Check if same exact item already exists. design_variant_id is
     // included null-safely (COALESCE) just like design_id/customization_
     // option_id — same product/color/size but a different design variant,
@@ -555,6 +734,62 @@ router.delete("/:id", authMiddleware, async (req, res) => {
   }
 });
 // UPDATE CART ITEM QUANTITY
+// Task K3: shared by PATCH/PUT quantity-update below. GENERAL behavior is
+// byte-identical to before; VARIANT resolves the item's own color/size to
+// its exact inventory row instead of the whole-product stock_quantity.
+async function validateQuantityAgainstStock(productId, color, size, quantity) {
+  const productResult = await pool.query(
+    "SELECT stock_quantity, inventory_mode FROM products WHERE id = $1",
+    [productId]
+  );
+  const product = productResult.rows[0];
+
+  if (!product) {
+    return { ok: false, error: "Product not found." };
+  }
+
+  if (product.inventory_mode !== "VARIANT") {
+    const stockQuantity = Number(product.stock_quantity || 0);
+
+    if (stockQuantity <= 0) {
+      return { ok: false, error: "This product is out of stock." };
+    }
+
+    if (Number(quantity) > stockQuantity) {
+      return {
+        ok: false,
+        error: `Only ${stockQuantity} item(s) available in stock.`,
+      };
+    }
+
+    return { ok: true };
+  }
+
+  const resolution = await resolveInventoryVariant(pool, productId, color, size);
+
+  if (!resolution.ok) {
+    return {
+      ok: false,
+      error: "This color and size combination is out of stock.",
+    };
+  }
+
+  const variantStock = Number(resolution.variant.stock_quantity || 0);
+
+  if (variantStock <= 0) {
+    return {
+      ok: false,
+      error: "This color and size combination is out of stock.",
+    };
+  }
+
+  if (Number(quantity) > variantStock) {
+    return { ok: false, error: "Only the available quantity can be added." };
+  }
+
+  return { ok: true };
+}
+
 router.patch("/:id", authMiddleware, async (req, res) => {
     try {
       const user_id = req.user.id;
@@ -566,7 +801,7 @@ router.patch("/:id", authMiddleware, async (req, res) => {
       }
 
       const cartItemResult = await pool.query(
-        "SELECT product_id FROM cart_items WHERE id = $1 AND user_id = $2",
+        "SELECT product_id, color, size FROM cart_items WHERE id = $1 AND user_id = $2",
         [cart_id, user_id]
       );
 
@@ -574,26 +809,17 @@ router.patch("/:id", authMiddleware, async (req, res) => {
         return res.status(404).json({ error: "Item not found" });
       }
 
-      const { product_id } = cartItemResult.rows[0];
+      const { product_id, color, size } = cartItemResult.rows[0];
 
-      const productResult = await pool.query(
-        "SELECT stock_quantity FROM products WHERE id = $1",
-        [product_id]
+      const validation = await validateQuantityAgainstStock(
+        product_id,
+        color,
+        size,
+        quantity
       );
-      const stockQuantity = Number(
-        productResult.rows[0]?.stock_quantity || 0
-      );
 
-      if (stockQuantity <= 0) {
-        return res
-          .status(400)
-          .json({ error: "This product is out of stock." });
-      }
-
-      if (Number(quantity) > stockQuantity) {
-        return res.status(400).json({
-          error: `Only ${stockQuantity} item(s) available in stock.`,
-        });
+      if (!validation.ok) {
+        return res.status(400).json({ error: validation.error });
       }
 
       const result = await pool.query(
@@ -626,7 +852,7 @@ router.put("/:id", authMiddleware, async (req, res) => {
       }
 
       const cartItemResult = await pool.query(
-        "SELECT product_id FROM cart_items WHERE id = $1 AND user_id = $2",
+        "SELECT product_id, color, size FROM cart_items WHERE id = $1 AND user_id = $2",
         [id, user_id]
       );
 
@@ -634,26 +860,17 @@ router.put("/:id", authMiddleware, async (req, res) => {
         return res.status(404).json({ error: "Item not found" });
       }
 
-      const { product_id } = cartItemResult.rows[0];
+      const { product_id, color, size } = cartItemResult.rows[0];
 
-      const productResult = await pool.query(
-        "SELECT stock_quantity FROM products WHERE id = $1",
-        [product_id]
+      const validation = await validateQuantityAgainstStock(
+        product_id,
+        color,
+        size,
+        quantity
       );
-      const stockQuantity = Number(
-        productResult.rows[0]?.stock_quantity || 0
-      );
 
-      if (stockQuantity <= 0) {
-        return res
-          .status(400)
-          .json({ error: "This product is out of stock." });
-      }
-
-      if (Number(quantity) > stockQuantity) {
-        return res.status(400).json({
-          error: `Only ${stockQuantity} item(s) available in stock.`,
-        });
+      if (!validation.ok) {
+        return res.status(400).json({ error: validation.error });
       }
 
       const result = await pool.query(

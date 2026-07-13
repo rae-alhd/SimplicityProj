@@ -3,6 +3,10 @@ import { useParams, useNavigate } from "react-router-dom";
 import API_BASE from "../config/api";
 import ImageGallery from "../components/ImageGallery";
 import { getActiveGallery } from "../utils/productGallery";
+import {
+  availabilityLabel,
+  getCombinationAvailability,
+} from "../utils/inventoryAvailability";
 
 /* ─────────────────────────────────────────────
    STYLES
@@ -289,7 +293,8 @@ const s = {
   },
   disabledBtnOutline: {
     color: "#bbb",
-    borderColor: "#ddd",
+    border: "1px solid #ddd",
+    background: "#fff",
     cursor: "not-allowed",
   },
 
@@ -357,6 +362,12 @@ export default function ProductDetails({ fetchCart }) {
   const [added, setAdded] = useState(false);
   const [colors, setColors] = useState([]);
   const [selectedColor, setSelectedColor] = useState(null);
+
+  // Task K3: General vs Variant inventory. `availability` is the raw
+  // response — { inventory_mode: "GENERAL", availability_status } or
+  // { inventory_mode: "VARIANT", combinations: [...] }. Never contains an
+  // exact quantity.
+  const [availability, setAvailability] = useState(null);
 
   useEffect(() => {
     setLoading(true);
@@ -436,8 +447,73 @@ export default function ProductDetails({ fetchCart }) {
     loadSizes();
   }, [id]);
 
+  useEffect(() => {
+    setAvailability(null);
+
+    fetch(`${API_BASE}/products/${id}/availability`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`Server error: ${res.status}`);
+        return res.json();
+      })
+      .then((data) => setAvailability(data))
+      .catch((err) => {
+        console.error("Error fetching product availability:", err);
+      });
+  }, [id]);
+
+  const isVariantInventory = availability?.inventory_mode === "VARIANT";
+
+  // Task K3: exact color+size combination availability — only meaningful in
+  // Variant mode. In General mode every size/color combination is always
+  // selectable (whole-product stock controls availability, unchanged).
+  function comboAvailable(colorId, sizeId) {
+    if (!isVariantInventory) return true;
+    return getCombinationAvailability(availability.combinations, colorId, sizeId)
+      .is_available;
+  }
+
+  // A color is only fully disabled when NONE of its active sizes are in
+  // stock — never merely because the CURRENTLY selected size happens to be
+  // unavailable for it. Selecting such a color is exactly what should let
+  // the customer discover its other available sizes, so it must stay
+  // clickable as long as at least one size works for it.
+  function colorHasAnyAvailableSize(colorId) {
+    if (!isVariantInventory) return true;
+    if (sizes.length === 0) return true;
+    return sizes.some((size) => comboAvailable(colorId, size.id));
+  }
+
+  // The new color always becomes selected — the previously selected size is
+  // only kept if it's still in stock for that exact new color; otherwise it
+  // clears immediately rather than lingering as a visually-selected but
+  // now-invalid combination. Computed against the NEXT color before either
+  // setState call, never against post-update state.
+  function handleSelectColor(nextColor) {
+    const sizeStillValid =
+      !isVariantInventory ||
+      !selectedSize ||
+      comboAvailable(nextColor?.id ?? null, selectedSize.id);
+
+    setSelectedColor(nextColor);
+    setSelectedSize(sizeStillValid ? selectedSize : null);
+  }
+
+  // Equivalent inverse: the new size always becomes selected; the
+  // previously selected color is only kept if it's still in stock for that
+  // exact new size.
+  function handleSelectSize(nextSize) {
+    const colorStillValid =
+      !isVariantInventory ||
+      colors.length === 0 ||
+      !selectedColor ||
+      comboAvailable(selectedColor.id, nextSize.id);
+
+    setSelectedSize(nextSize);
+    setSelectedColor(colorStillValid ? selectedColor : null);
+  }
+
   const handleAddToCart = async () => {
-    if (Number(product?.stock_quantity || 0) <= 0) {
+    if (!isVariantInventory && Number(product?.stock_quantity || 0) <= 0) {
       alert("This product is out of stock.");
       return;
     }
@@ -454,6 +530,22 @@ export default function ProductDetails({ fetchCart }) {
 
     if (sizes.length > 0 && !selectedSize) {
       alert("Please select a size.");
+      return;
+    }
+
+    if (colors.length > 0 && !selectedColor) {
+      alert("Please select a color.");
+      return;
+    }
+
+    // Task K3: exact combination must be in stock before Add to Cart is
+    // ever attempted — the backend re-validates this independently, but
+    // the customer should never even reach a rejected request here.
+    if (
+      isVariantInventory &&
+      !comboAvailable(selectedColor?.id ?? null, selectedSize?.id)
+    ) {
+      alert("This color and size combination is out of stock.");
       return;
     }
 
@@ -529,8 +621,34 @@ export default function ProductDetails({ fetchCart }) {
   }
 
   const activeGallery = getActiveGallery(product, selectedColor);
-  const isOutOfStock = Number(product.stock_quantity || 0) <= 0;
-  const isAddToCartBlocked = isOutOfStock || sizesLoading || Boolean(sizesError);
+
+  // Task K3: in Variant mode, the whole-product badge only says "out of
+  // stock" when truly nothing is purchasable (every combination is) —
+  // per-combination availability is shown on the size/color buttons
+  // themselves instead of one blanket number-derived flag.
+  const isOutOfStock = isVariantInventory
+    ? Boolean(availability?.combinations?.length) &&
+      availability.combinations.every((c) => !c.is_available)
+    : Number(product.stock_quantity || 0) <= 0;
+
+  const selectedComboAvailability =
+    isVariantInventory &&
+    (colors.length === 0 || selectedColor) &&
+    (sizes.length === 0 || selectedSize)
+      ? getCombinationAvailability(
+          availability.combinations,
+          selectedColor?.id ?? null,
+          selectedSize?.id
+        )
+      : null;
+
+  const isAddToCartBlocked =
+    isOutOfStock ||
+    sizesLoading ||
+    Boolean(sizesError) ||
+    (isVariantInventory && selectedComboAvailability
+      ? !selectedComboAvailability.is_available
+      : false);
 
   return (
     <div style={s.page}>
@@ -601,7 +719,11 @@ export default function ProductDetails({ fetchCart }) {
               color: isOutOfStock ? "#c0392b" : "#4a7c59",
             }}
           >
-            {isOutOfStock ? "Out of Stock" : "In Stock"}
+            {selectedComboAvailability
+              ? availabilityLabel(selectedComboAvailability.availability_status)
+              : isOutOfStock
+              ? "Out of Stock"
+              : "In Stock"}
           </span>
 
           <hr style={s.divider} />
@@ -638,25 +760,42 @@ export default function ProductDetails({ fetchCart }) {
                 )}
               </span>
               <div style={s.sizeRow}>
-                {sizes.map((size) => (
-                  <button
-                    key={size.id}
-                    style={s.sizeBtn(selectedSize?.id === size.id)}
-                    onClick={() => setSelectedSize(size)}
-                    onMouseEnter={(e) => {
-                      if (selectedSize?.id !== size.id) {
-                        e.currentTarget.style.borderColor = "#1a1a1a";
-                      }
-                    }}
-                    onMouseLeave={(e) => {
-                      if (selectedSize?.id !== size.id) {
-                        e.currentTarget.style.borderColor = "#ddd";
-                      }
-                    }}
-                  >
-                    {size.size_label}
-                  </button>
-                ))}
+                {sizes.map((size) => {
+                  const sizeDisabled =
+                    isVariantInventory &&
+                    selectedColor &&
+                    !comboAvailable(selectedColor.id, size.id);
+
+                  // Never both at once: a disabled button is never rendered
+                  // as "selected" even if selectedSize somehow still points
+                  // at it.
+                  const isSelected = !sizeDisabled && selectedSize?.id === size.id;
+
+                  return (
+                    <button
+                      key={size.id}
+                      title={sizeDisabled ? "Out of stock" : undefined}
+                      style={{
+                        ...s.sizeBtn(isSelected),
+                        ...(sizeDisabled ? s.disabledBtnOutline : {}),
+                      }}
+                      disabled={sizeDisabled}
+                      onClick={() => handleSelectSize(size)}
+                      onMouseEnter={(e) => {
+                        if (!sizeDisabled && !isSelected) {
+                          e.currentTarget.style.borderColor = "#1a1a1a";
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!sizeDisabled && !isSelected) {
+                          e.currentTarget.style.borderColor = "#ddd";
+                        }
+                      }}
+                    >
+                      {size.size_label}
+                    </button>
+                  );
+                })}
               </div>
             </>
           )}
@@ -673,18 +812,31 @@ export default function ProductDetails({ fetchCart }) {
                 )}
               </span>
               <div style={s.colorRow}>
-                {colors.map((color) => (
-                  <button
-                    key={color.id}
-                    title={color.color_name}
-                    aria-label={color.color_name}
-                    onClick={() => setSelectedColor(color)}
-                    style={{
-                      ...s.colorSwatchBtn(selectedColor?.id === color.id),
-                      backgroundColor: color.color_hex || "#eee",
-                    }}
-                  />
-                ))}
+                {colors.map((color) => {
+                  const colorDisabled = !colorHasAnyAvailableSize(color.id);
+
+                  const isSelected = !colorDisabled && selectedColor?.id === color.id;
+
+                  return (
+                    <button
+                      key={color.id}
+                      title={
+                        colorDisabled
+                          ? `${color.color_name} — Out of stock`
+                          : color.color_name
+                      }
+                      aria-label={color.color_name}
+                      disabled={colorDisabled}
+                      onClick={() => handleSelectColor(color)}
+                      style={{
+                        ...s.colorSwatchBtn(isSelected),
+                        backgroundColor: color.color_hex || "#eee",
+                        opacity: colorDisabled ? 0.3 : 1,
+                        cursor: colorDisabled ? "not-allowed" : "pointer",
+                      }}
+                    />
+                  );
+                })}
               </div>
             </>
           )}
