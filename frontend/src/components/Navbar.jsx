@@ -165,7 +165,7 @@ const getNavLinks = (user) => {
     // via Dashboard — not mixed into the customer-facing nav directly.
     links.push({ label: "Dashboard", href: "/dashboard" });
   } else {
-    links.push({ label: "Orders", href: "/my-orders" });
+    links.push({ label: "My Orders", href: "/my-orders" });
   }
   return links;
 };
