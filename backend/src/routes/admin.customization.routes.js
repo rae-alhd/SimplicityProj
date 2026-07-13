@@ -149,6 +149,9 @@ router.get("/:productId/sizes", async (req, res) => {
 });
 
 // POST /api/admin/customization/:productId/sizes
+// Task L1: a POST always creates an ACTIVE row (default is_active = true),
+// so a STANDARD product — which must never have an active size row — can
+// never accept this at all, regardless of the submitted label.
 router.post("/:productId/sizes", async (req, res) => {
   try {
     const { size_label, sort_order = 0 } = req.body;
@@ -157,9 +160,24 @@ router.post("/:productId/sizes", async (req, res) => {
       return res.status(400).json({ error: "size_label is required" });
     }
 
+    const productResult = await pool.query(
+      "SELECT sizing_mode FROM products WHERE id = $1",
+      [req.params.productId]
+    );
+
+    if (productResult.rows.length === 0) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    if (productResult.rows[0].sizing_mode === "STANDARD") {
+      return res.status(400).json({
+        error: "Switch this product to Multiple sizes before adding active sizes.",
+      });
+    }
+
     const result = await pool.query(
       `
-      INSERT INTO customizable_product_sizes 
+      INSERT INTO customizable_product_sizes
       (product_id, size_label, sort_order)
       VALUES ($1, $2, $3)
       RETURNING *
@@ -175,14 +193,39 @@ router.post("/:productId/sizes", async (req, res) => {
 });
 
 // PATCH /api/admin/customization/sizes/:id
+// Task L1: only an explicit reactivation (is_active: true) is blocked for a
+// STANDARD product — editing a label or deactivating (is_active: false, or
+// omitting is_active entirely) remains allowed exactly as before.
 router.patch("/sizes/:id", async (req, res) => {
   try {
     const { size_label, is_active, sort_order } = req.body;
 
+    if (is_active === true) {
+      const sizeProductResult = await pool.query(
+        `
+        SELECT p.sizing_mode
+        FROM customizable_product_sizes s
+        JOIN products p ON p.id = s.product_id
+        WHERE s.id = $1
+        `,
+        [req.params.id]
+      );
+
+      if (sizeProductResult.rows.length === 0) {
+        return res.status(404).json({ error: "Size not found" });
+      }
+
+      if (sizeProductResult.rows[0].sizing_mode === "STANDARD") {
+        return res.status(400).json({
+          error: "Switch this product to Multiple sizes before adding active sizes.",
+        });
+      }
+    }
+
     const result = await pool.query(
       `
       UPDATE customizable_product_sizes
-      SET 
+      SET
         size_label = COALESCE($1, size_label),
         is_active = COALESCE($2, is_active),
         sort_order = COALESCE($3, sort_order)

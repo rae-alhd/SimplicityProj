@@ -61,7 +61,9 @@ router.get("/", authMiddleware, async (req, res) => {
 products.customization_extra_price,
 products.image_url,
 products.stock_quantity,
-products.inventory_mode
+products.inventory_mode,
+products.sizing_mode,
+products.standard_size_label
       FROM cart_items
       JOIN products
         ON cart_items.product_id = products.id
@@ -339,7 +341,7 @@ router.post("/", authMiddleware, async (req, res) => {
     // after color/size (and any design variant) have been resolved to
     // their final canonical values — Task K3.
     const productResult = await pool.query(
-      "SELECT stock_quantity, inventory_mode FROM products WHERE id = $1",
+      "SELECT stock_quantity, inventory_mode, sizing_mode FROM products WHERE id = $1",
       [product_id]
     );
 
@@ -348,6 +350,17 @@ router.post("/", authMiddleware, async (req, res) => {
     }
 
     const inventoryMode = productResult.rows[0].inventory_mode;
+    const sizingMode = productResult.rows[0].sizing_mode;
+
+    // Task L1: a STANDARD product must never combine with VARIANT
+    // inventory — this should already be structurally impossible (VARIANT
+    // requires >=1 active size, STANDARD requires 0), but block it
+    // explicitly rather than trust that invariant blindly.
+    if (sizingMode === "STANDARD" && inventoryMode === "VARIANT") {
+      return res.status(400).json({
+        error: "This product's configuration is invalid. Please contact support.",
+      });
+    }
 
     if (inventoryMode !== "VARIANT") {
       // Existing GENERAL behavior, unchanged: customized and non-customized
@@ -424,6 +437,55 @@ router.post("/", authMiddleware, async (req, res) => {
     // stay exactly as submitted — unchanged from existing behavior.
     let resolvedColor = color;
     let resolvedSize = size;
+
+    // 🔍 Task L1: sizing-mode validation. STANDARD is fully resolved right
+    // here (never enters the design branch's own size logic — a STANDARD
+    // product's size is always null, full stop). MULTI_SIZE without a
+    // design is validated here too, since the design branch below only
+    // validates size for design-linked items — a plain MULTI_SIZE item
+    // never had real size validation before Task L1. A MULTI_SIZE
+    // design-linked item keeps using the design branch's own (already
+    // correct, variant-restriction-aware) size validation, untouched.
+    if (sizingMode === "STANDARD") {
+      const submittedSize = typeof size === "string" ? size.trim() : size;
+
+      if (submittedSize !== null && submittedSize !== undefined && submittedSize !== "") {
+        return res.status(400).json({ error: "This product uses a single fixed size." });
+      }
+
+      resolvedSize = null;
+    } else if (!design_id) {
+      const activeSizesResult = await pool.query(
+        "SELECT size_label FROM customizable_product_sizes WHERE product_id = $1 AND is_active = true",
+        [product_id]
+      );
+      const activeSizes = activeSizesResult.rows;
+
+      if (activeSizes.length === 0) {
+        return res.status(400).json({
+          error: "This product's sizes are not configured yet.",
+        });
+      }
+
+      const submittedSizeLabel =
+        typeof size === "string" ? size.trim().toLowerCase() : "";
+
+      if (!submittedSizeLabel) {
+        return res.status(400).json({ error: "Please select a size." });
+      }
+
+      const matchedSize = activeSizes.find(
+        (s) => s.size_label.trim().toLowerCase() === submittedSizeLabel
+      );
+
+      if (!matchedSize) {
+        return res
+          .status(400)
+          .json({ error: "Selected size is not available for this product." });
+      }
+
+      resolvedSize = matchedSize.size_label;
+    }
 
     // 🔍 Validate the selected design and its exact color/size variant, if
     // any. Every step re-derives trust from the database — the submitted

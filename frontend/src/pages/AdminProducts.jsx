@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import AdminNav from "../components/AdminNav";
 import API_BASE from "../config/api";
@@ -216,6 +216,14 @@ export default function AdminProducts() {
   const [editingSizeId, setEditingSizeId] = useState(null);
   const [editSizeLabel, setEditSizeLabel] = useState("");
   const [sizeActionError, setSizeActionError] = useState("");
+
+  // Task L1: Product Sizing (MULTI_SIZE vs STANDARD). The label input is
+  // kept editable even while already STANDARD, so the owner can relabel
+  // without switching away and back.
+  const [standardSizeLabelInput, setStandardSizeLabelInput] = useState("");
+  const [sizingActionError, setSizingActionError] = useState("");
+  const [sizingSaving, setSizingSaving] = useState(false);
+  const standardSizeLabelInputRef = useRef(null);
 
   // Task K2: Variant Inventory — kept as its own isolated state group so it
   // can be reset in one place (the editingProduct?.id effect below) without
@@ -698,6 +706,106 @@ export default function AdminProducts() {
     }
   };
 
+  // Task L1: Product Sizing. Both handlers merge the PATCH response
+  // straight into editingProduct so the panel reflects the new sizing_mode
+  // immediately, then reload Product Sizes + Inventory (per the task's
+  // explicit "reload product details / sizes / inventory" requirement) —
+  // reactivating/adding sizes and the inventory matrix both depend on
+  // exactly this mode.
+  async function applySizingChange(data) {
+    setEditingProduct((prev) => (prev ? { ...prev, ...data } : prev));
+    fetchProducts();
+    if (editingProduct) {
+      await fetchManageSizes(editingProduct.id);
+      await fetchInventory(editingProduct.id);
+    }
+  }
+
+  async function handleSwitchToMultiSize() {
+    if (!editingProduct || editingProduct.sizing_mode === "MULTI_SIZE") return;
+
+    const ok = window.confirm(
+      "Switch this product to Multiple sizes? Customers will choose from the active sizes configured below."
+    );
+    if (!ok) return;
+
+    try {
+      setSizingSaving(true);
+      setSizingActionError("");
+
+      const res = await fetch(
+        `${API_BASE}/admin/products/${editingProduct.id}/sizing`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ sizing_mode: "MULTI_SIZE" }),
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setSizingActionError(data.error || "Could not switch sizing mode.");
+        return;
+      }
+
+      setStandardSizeLabelInput("");
+      await applySizingChange(data);
+    } catch (err) {
+      console.error("Switch to multi-size error:", err);
+      setSizingActionError("Something went wrong while switching sizing mode.");
+    } finally {
+      setSizingSaving(false);
+    }
+  }
+
+  async function handleSaveStandardSizing() {
+    if (!editingProduct) return;
+
+    const trimmedLabel = standardSizeLabelInput.trim();
+    if (!trimmedLabel) {
+      setSizingActionError("Enter a customer-facing size label.");
+      return;
+    }
+
+    try {
+      setSizingSaving(true);
+      setSizingActionError("");
+
+      const res = await fetch(
+        `${API_BASE}/admin/products/${editingProduct.id}/sizing`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            sizing_mode: "STANDARD",
+            standard_size_label: trimmedLabel,
+          }),
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setSizingActionError(data.error || "Could not switch sizing mode.");
+        return;
+      }
+
+      await applySizingChange(data);
+    } catch (err) {
+      console.error("Save standard sizing error:", err);
+      setSizingActionError("Something went wrong while saving sizing.");
+    } finally {
+      setSizingSaving(false);
+    }
+  }
+
   // Task K2: Variant Inventory — GET reloads the whole panel from the
   // server (source of truth) and rebuilds the draft from it, so a save or
   // mode switch always ends up showing exactly what's actually stored.
@@ -1007,6 +1115,12 @@ export default function AdminProducts() {
     setInventoryError("");
     setInventoryDraftError("");
     setInventorySuccessMessage("");
+
+    // Task L1: pre-fill the label input from whatever this product already
+    // has saved (blank for a MULTI_SIZE product that's never been
+    // STANDARD), and never let Product A's sizing form error linger.
+    setStandardSizeLabelInput(editingProduct?.standard_size_label || "");
+    setSizingActionError("");
   }, [editingProduct?.id]);
 
   const filterFilteredProducts = products.filter((product) =>
@@ -1531,8 +1645,110 @@ export default function AdminProducts() {
               )}
             </div>
 
+            {/* Task L1: Product Sizing — MULTI_SIZE (real selectable sizes)
+                vs STANDARD (one fixed admin-defined label, no size rows). */}
+            <div style={styles.colorsSection}>
+              <p style={styles.smallEyebrow}>Product Sizing</p>
+
+              <div style={styles.sizingModeRow}>
+                <button
+                  onClick={handleSwitchToMultiSize}
+                  disabled={sizingSaving}
+                  style={{
+                    ...styles.sizingModeBtn,
+                    ...(editingProduct.sizing_mode === "MULTI_SIZE"
+                      ? styles.sizingModeBtnActive
+                      : {}),
+                  }}
+                >
+                  Multiple sizes
+                </button>
+                <button
+                  onClick={() => standardSizeLabelInputRef.current?.focus()}
+                  disabled={sizingSaving}
+                  title="Enter a label below and use Switch to Standard"
+                  style={{
+                    ...styles.sizingModeBtn,
+                    ...(editingProduct.sizing_mode === "STANDARD"
+                      ? styles.sizingModeBtnActive
+                      : {}),
+                  }}
+                >
+                  Standard / One Size
+                </button>
+              </div>
+
+              {editingProduct.sizing_mode === "MULTI_SIZE" ? (
+                <>
+                  <p style={styles.muted}>
+                    Customers choose from the active sizes configured below.
+                  </p>
+                  {manageSizes.filter((s) => s.is_active).length === 0 && (
+                    <p style={styles.inventoryWarningBox}>
+                      Add or reactivate at least one size before customers
+                      can purchase this product.
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p style={styles.muted}>
+                  Customers see this exact label instead of a size selector.
+                </p>
+              )}
+
+              {/* Always show the label field — lets the owner enter a label
+                  before switching to STANDARD, or relabel while already
+                  STANDARD, without a separate edit mode. */}
+              <div style={styles.colorAddRow}>
+                <input
+                  ref={standardSizeLabelInputRef}
+                  style={styles.input}
+                  placeholder='Customer-facing size label (e.g. "One Size", "Adjustable")'
+                  value={standardSizeLabelInput}
+                  onChange={(e) => setStandardSizeLabelInput(e.target.value)}
+                />
+                <button
+                  onClick={handleSaveStandardSizing}
+                  disabled={sizingSaving}
+                  style={styles.editBtn}
+                >
+                  {editingProduct.sizing_mode === "STANDARD"
+                    ? "Save Label"
+                    : "Switch to Standard"}
+                </button>
+              </div>
+
+              {editingProduct.sizing_mode === "STANDARD" && (
+                <p style={styles.muted}>
+                  This product uses General inventory and will not show
+                  size-selection buttons.
+                </p>
+              )}
+
+              {editingProduct.sizing_mode === "MULTI_SIZE" &&
+                manageSizes.filter((s) => s.is_active).length > 0 && (
+                  <p style={styles.muted}>
+                    Deactivate all active sizes below before switching to
+                    Standard sizing.
+                  </p>
+                )}
+
+              {sizingActionError && (
+                <p style={{ ...styles.muted, color: "#b52a2a" }}>
+                  {sizingActionError}
+                </p>
+              )}
+            </div>
+
             <div style={styles.colorsSection}>
               <p style={styles.smallEyebrow}>Product Sizes</p>
+
+              {editingProduct.sizing_mode === "STANDARD" && (
+                <p style={styles.inventoryWarningBox}>
+                  Switch to Multiple sizes before adding or reactivating
+                  sizes.
+                </p>
+              )}
 
               <div style={styles.colorAddRow}>
                 <input
@@ -1540,8 +1756,13 @@ export default function AdminProducts() {
                   placeholder="Size label (e.g. S, M, XL)"
                   value={newSizeLabel}
                   onChange={(e) => setNewSizeLabel(e.target.value)}
+                  disabled={editingProduct.sizing_mode === "STANDARD"}
                 />
-                <button onClick={handleAddSize} style={styles.editBtn}>
+                <button
+                  onClick={handleAddSize}
+                  disabled={editingProduct.sizing_mode === "STANDARD"}
+                  style={styles.editBtn}
+                >
                   Add Size
                 </button>
               </div>
@@ -1610,6 +1831,12 @@ export default function AdminProducts() {
                         ) : (
                           <button
                             onClick={() => handleToggleSizeActive(size)}
+                            disabled={editingProduct.sizing_mode === "STANDARD"}
+                            title={
+                              editingProduct.sizing_mode === "STANDARD"
+                                ? "Switch to Multiple sizes before reactivating sizes."
+                                : undefined
+                            }
                             style={styles.imageActionBtn}
                           >
                             Reactivate
@@ -2230,6 +2457,27 @@ const styles = {
     marginTop: "24px",
     paddingTop: "20px",
     borderTop: "1px solid #eee",
+  },
+  // ---- Task L1: Product Sizing ----
+  sizingModeRow: {
+    display: "flex",
+    gap: "10px",
+    marginBottom: "10px",
+  },
+  sizingModeBtn: {
+    padding: "9px 16px",
+    border: "1px solid #ddd",
+    background: "#fff",
+    color: "#888",
+    cursor: "pointer",
+    fontFamily: "Georgia, serif",
+    fontSize: "12px",
+    letterSpacing: "0.04em",
+  },
+  sizingModeBtnActive: {
+    border: "1px solid #111",
+    background: "#111",
+    color: "#fff",
   },
   // ---- Task K2: Variant Inventory ----
   inventorySection: {

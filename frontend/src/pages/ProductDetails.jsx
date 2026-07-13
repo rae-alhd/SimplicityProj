@@ -161,6 +161,14 @@ const s = {
     letterSpacing: "0.04em",
     marginBottom: "28px",
   },
+  standardSizeLine: {
+    fontSize: "11px",
+    letterSpacing: "0.18em",
+    textTransform: "uppercase",
+    color: "#999",
+    fontFamily: FONT,
+    marginBottom: "28px",
+  },
   sizesStatusRow: {
     display: "flex",
     alignItems: "center",
@@ -463,6 +471,12 @@ export default function ProductDetails({ fetchCart }) {
 
   const isVariantInventory = availability?.inventory_mode === "VARIANT";
 
+  // Task L1: STANDARD products never show a size selector and never
+  // require selectedSize — the product object already carries this
+  // (GET /api/products uses SELECT *, so sizing_mode/standard_size_label
+  // are already present, no extra fetch needed).
+  const isStandardSizing = product?.sizing_mode === "STANDARD";
+
   // Task K3: exact color+size combination availability — only meaningful in
   // Variant mode. In General mode every size/color combination is always
   // selectable (whole-product stock controls availability, unchanged).
@@ -518,19 +532,29 @@ export default function ProductDetails({ fetchCart }) {
       return;
     }
 
-    if (sizesLoading) {
-      alert("Sizes are still loading. Please wait a moment and try again.");
-      return;
-    }
+    // Task L1: STANDARD never requires a size at all — skip every size
+    // check below entirely (selectedSize stays null forever for this
+    // product, so the Cart payload's size field is always null).
+    if (!isStandardSizing) {
+      if (sizesLoading) {
+        alert("Sizes are still loading. Please wait a moment and try again.");
+        return;
+      }
 
-    if (sizesError) {
-      alert("Sizes could not be loaded. Please try again.");
-      return;
-    }
+      if (sizesError) {
+        alert("Sizes could not be loaded. Please try again.");
+        return;
+      }
 
-    if (sizes.length > 0 && !selectedSize) {
-      alert("Please select a size.");
-      return;
+      if (sizes.length === 0) {
+        alert("Sizes are not configured yet.");
+        return;
+      }
+
+      if (!selectedSize) {
+        alert("Please select a size.");
+        return;
+      }
     }
 
     if (colors.length > 0 && !selectedColor) {
@@ -644,8 +668,9 @@ export default function ProductDetails({ fetchCart }) {
 
   const isAddToCartBlocked =
     isOutOfStock ||
-    sizesLoading ||
-    Boolean(sizesError) ||
+    (!isStandardSizing && sizesLoading) ||
+    (!isStandardSizing && Boolean(sizesError)) ||
+    (!isStandardSizing && sizes.length === 0) ||
     (isVariantInventory && selectedComboAvailability
       ? !selectedComboAvailability.is_available
       : false);
@@ -735,68 +760,85 @@ export default function ProductDetails({ fetchCart }) {
 
           <hr style={s.divider} />
 
-          {sizesLoading && (
-            <p style={s.sizesLoadingText}>Loading sizes…</p>
-          )}
-
-          {!sizesLoading && sizesError && (
-            <div style={s.sizesStatusRow}>
-              <span style={s.sizesErrorText}>{sizesError}</span>
-              <button type="button" onClick={loadSizes} style={s.retryBtn}>
-                Retry
-              </button>
-            </div>
-          )}
-
-          {!sizesLoading && !sizesError && sizes.length > 0 && (
+          {isStandardSizing ? (
+            // Task L1: STANDARD — no size buttons, no size requirement at
+            // all. Read-only line only; selectedSize stays null forever so
+            // the Cart payload's size field is always null for this
+            // product, exactly like it always was for a sizeless product.
+            <p style={s.standardSizeLine}>
+              SIZE — {product.standard_size_label || "One Size"}
+            </p>
+          ) : (
             <>
-              {/* Size selector */}
-              <span style={s.label}>
-                Select Size
-                {selectedSize && (
-                  <span style={{ color: "#1a1a1a", marginLeft: "10px" }}>
-                    — {selectedSize.size_label}
+              {sizesLoading && (
+                <p style={s.sizesLoadingText}>Loading sizes…</p>
+              )}
+
+              {!sizesLoading && sizesError && (
+                <div style={s.sizesStatusRow}>
+                  <span style={s.sizesErrorText}>{sizesError}</span>
+                  <button type="button" onClick={loadSizes} style={s.retryBtn}>
+                    Retry
+                  </button>
+                </div>
+              )}
+
+              {!sizesLoading && !sizesError && sizes.length === 0 && (
+                <p style={s.sizesLoadingText}>Sizes are not configured yet.</p>
+              )}
+
+              {!sizesLoading && !sizesError && sizes.length > 0 && (
+                <>
+                  {/* Size selector */}
+                  <span style={s.label}>
+                    Select Size
+                    {selectedSize && (
+                      <span style={{ color: "#1a1a1a", marginLeft: "10px" }}>
+                        — {selectedSize.size_label}
+                      </span>
+                    )}
                   </span>
-                )}
-              </span>
-              <div style={s.sizeRow}>
-                {sizes.map((size) => {
-                  const sizeDisabled =
-                    isVariantInventory &&
-                    selectedColor &&
-                    !comboAvailable(selectedColor.id, size.id);
+                  <div style={s.sizeRow}>
+                    {sizes.map((size) => {
+                      const sizeDisabled =
+                        isVariantInventory &&
+                        selectedColor &&
+                        !comboAvailable(selectedColor.id, size.id);
 
-                  // Never both at once: a disabled button is never rendered
-                  // as "selected" even if selectedSize somehow still points
-                  // at it.
-                  const isSelected = !sizeDisabled && selectedSize?.id === size.id;
+                      // Never both at once: a disabled button is never
+                      // rendered as "selected" even if selectedSize somehow
+                      // still points at it.
+                      const isSelected =
+                        !sizeDisabled && selectedSize?.id === size.id;
 
-                  return (
-                    <button
-                      key={size.id}
-                      title={sizeDisabled ? "Out of stock" : undefined}
-                      style={{
-                        ...s.sizeBtn(isSelected),
-                        ...(sizeDisabled ? s.disabledBtnOutline : {}),
-                      }}
-                      disabled={sizeDisabled}
-                      onClick={() => handleSelectSize(size)}
-                      onMouseEnter={(e) => {
-                        if (!sizeDisabled && !isSelected) {
-                          e.currentTarget.style.borderColor = "#1a1a1a";
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!sizeDisabled && !isSelected) {
-                          e.currentTarget.style.borderColor = "#ddd";
-                        }
-                      }}
-                    >
-                      {size.size_label}
-                    </button>
-                  );
-                })}
-              </div>
+                      return (
+                        <button
+                          key={size.id}
+                          title={sizeDisabled ? "Out of stock" : undefined}
+                          style={{
+                            ...s.sizeBtn(isSelected),
+                            ...(sizeDisabled ? s.disabledBtnOutline : {}),
+                          }}
+                          disabled={sizeDisabled}
+                          onClick={() => handleSelectSize(size)}
+                          onMouseEnter={(e) => {
+                            if (!sizeDisabled && !isSelected) {
+                              e.currentTarget.style.borderColor = "#1a1a1a";
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (!sizeDisabled && !isSelected) {
+                              e.currentTarget.style.borderColor = "#ddd";
+                            }
+                          }}
+                        >
+                          {size.size_label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
             </>
           )}
 
@@ -892,10 +934,14 @@ export default function ProductDetails({ fetchCart }) {
             >
               {isOutOfStock
                 ? "Out of Stock"
+                : isStandardSizing
+                ? "Add to Cart"
                 : sizesLoading
                 ? "Loading Sizes…"
                 : sizesError
                 ? "Sizes Unavailable"
+                : sizes.length === 0
+                ? "Sizes Not Configured"
                 : "Add to Cart"}
             </button>
 

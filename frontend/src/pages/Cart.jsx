@@ -333,6 +333,12 @@ function CartItem({ item, onChangeQty, onRemove }) {
     ? availabilityLabel(item.availability_status)
     : getStockAvailability(stockQuantity);
 
+  // Task L1: a STANDARD item's cart row always has size: null — show the
+  // product's standard label instead of a blank space. MULTI_SIZE keeps
+  // showing the exact selected size, unchanged.
+  const displaySize =
+    item.size || (item.sizing_mode === "STANDARD" ? item.standard_size_label : "");
+
   return (
     <div style={styles.card}>
       {/* Image placeholder — swap with <img> once you have product images */}
@@ -354,7 +360,8 @@ function CartItem({ item, onChangeQty, onRemove }) {
   </div>
 
   <div style={styles.itemMeta}>
-    {item.color} · {item.size}
+    {item.color}
+    {displaySize ? ` · ${displaySize}` : ""}
   </div>
 
   {item.is_customized && (

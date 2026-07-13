@@ -310,7 +310,11 @@ function OrderCard({
       </div>
     </div>
 
-    <span style={s.itemCell}>{item.size || "—"}</span>
+    {/* Task L1: item.size is always null for a STANDARD order line — its
+        permanent standard_size_label_snapshot is shown instead. */}
+    <span style={s.itemCell}>
+      {item.size || item.standard_size_label_snapshot || "—"}
+    </span>
     <span style={s.itemCell}>{item.color || "—"}</span>
     <span style={{ ...s.itemCell, textAlign: "right" }}>{item.quantity}</span>
     <span style={{ ...s.itemCell, textAlign: "right" }}>

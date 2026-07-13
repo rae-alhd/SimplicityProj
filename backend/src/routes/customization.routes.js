@@ -68,7 +68,9 @@ router.get("/products/:productId", async (req, res) => {
         is_customizable,
         customization_extra_price,
         customization_note,
-        inventory_mode
+        inventory_mode,
+        sizing_mode,
+        standard_size_label
       FROM products
       WHERE id = $1
         AND is_customizable = true

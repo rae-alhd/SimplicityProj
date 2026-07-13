@@ -344,6 +344,8 @@ const cartResult = await client.query(
     p.name AS product_name,
     p.is_active,
     p.inventory_mode,
+    p.sizing_mode,
+    p.standard_size_label,
 
     co.option_label AS customization_label,
     co.extra_price AS customization_option_extra_price,
@@ -400,6 +402,68 @@ const cartResult = await client.query(
       }
 
       designSnapshotByCartItemIndex.set(i, validation.snapshot);
+    }
+
+    // 1.42 Task L1: revalidate sizing mode fresh, right before the order is
+    // created — mirrors the design-variant revalidation above. Nothing
+    // about Cart's own POST-time validation is trusted alone here: the
+    // owner may have switched the product's sizing mode, changed the
+    // standard label, or deactivated a size in the time since Add to Cart.
+    const standardSizeLabelSnapshotByCartItemIndex = new Map();
+
+    for (let i = 0; i < cartItems.length; i++) {
+      const item = cartItems[i];
+
+      if (item.sizing_mode === "STANDARD") {
+        if (item.size !== null && item.size !== undefined) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error:
+              "One of your items needs to be selected again because its size configuration has changed.",
+          });
+        }
+
+        // Permanent snapshot of the label the customer actually saw —
+        // never re-derived from the live products.standard_size_label
+        // later, so a subsequent rename never changes this order.
+        standardSizeLabelSnapshotByCartItemIndex.set(i, item.standard_size_label);
+        continue;
+      }
+
+      // MULTI_SIZE. Design-linked items already got equivalent (and
+      // variant-restriction-aware) size revalidation via
+      // validateAndSnapshotDesignVariant above — only a plain, non-design
+      // item needs this generic active-size check.
+      if (!item.design_id) {
+        const activeSizesResult = await client.query(
+          "SELECT size_label FROM customizable_product_sizes WHERE product_id = $1 AND is_active = true",
+          [item.product_id]
+        );
+        const activeSizes = activeSizesResult.rows;
+
+        if (activeSizes.length === 0) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error:
+              "One of your items is no longer available in any size. Please remove it from your cart.",
+          });
+        }
+
+        const submittedSizeLabel =
+          typeof item.size === "string" ? item.size.trim().toLowerCase() : "";
+
+        const matchedSize = activeSizes.find(
+          (s) => s.size_label.trim().toLowerCase() === submittedSizeLabel
+        );
+
+        if (!matchedSize) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error:
+              "One of your items needs to be selected again because its size is no longer available.",
+          });
+        }
+      }
     }
 
     // 1.45 Task K3: resolve + lock the exact product_inventory_variants row
@@ -550,6 +614,10 @@ for (let i = 0; i < cartItems.length; i++) {
     inventory_mode: "GENERAL",
     inventory_variant_id: null,
   };
+  // Task L1: null for MULTI_SIZE lines, the permanent standard-label
+  // snapshot for STANDARD lines.
+  const standardSizeLabelSnapshot =
+    standardSizeLabelSnapshotByCartItemIndex.get(i) ?? null;
 
   await client.query(
     `
@@ -575,9 +643,10 @@ for (let i = 0; i < cartItems.length; i++) {
       design_color_id_snapshot,
       design_preview_image_url_snapshot,
       inventory_mode_snapshot,
-      inventory_variant_id
+      inventory_variant_id,
+      standard_size_label_snapshot
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
     `,
     [
       order.id,
@@ -604,6 +673,8 @@ for (let i = 0; i < cartItems.length; i++) {
 
       inventorySnapshot.inventory_mode,
       inventorySnapshot.inventory_variant_id,
+
+      standardSizeLabelSnapshot,
     ]
   );
 }

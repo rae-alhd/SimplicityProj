@@ -267,6 +267,12 @@ function CustomizePage() {
   const hasColors = Array.isArray(config?.colors) && config.colors.length > 0;
   const hasSizes = Array.isArray(config?.sizes) && config.sizes.length > 0;
 
+  // Task L1: STANDARD always has zero active sizes (backend-guaranteed) —
+  // hasSizes is already false for it, same as the existing "no size" path,
+  // but it must be distinguished from a MISCONFIGURED MULTI_SIZE product
+  // with zero sizes, which is NOT purchasable (see handleAddToCart below).
+  const isStandardSizing = product?.sizing_mode === "STANDARD";
+
   // "Has anything configured at all" (ignores compatibility) controls
   // whether the design section renders at all — a product with zero design
   // collections simply doesn't need one, same as before this task.
@@ -353,13 +359,24 @@ function CustomizePage() {
       return;
     }
 
-    if (
-      !product ||
-      (hasColors && !selectedColor) ||
-      (hasSizes && !selectedSize)
-    ) {
+    if (!product || (hasColors && !selectedColor)) {
       alert("Please choose product, color, and size.");
       return;
+    }
+
+    // Task L1: STANDARD never requires a size — selectedSize stays null
+    // forever for it. MULTI_SIZE requires an actual active size to exist
+    // at all (a misconfigured zero-size MULTI_SIZE product is not
+    // purchasable) and requires one to be selected.
+    if (!isStandardSizing) {
+      if (!hasSizes) {
+        alert("Sizes are not configured yet.");
+        return;
+      }
+      if (!selectedSize) {
+        alert("Please choose product, color, and size.");
+        return;
+      }
     }
 
     // Task I2: selectedOption is never chosen independently anymore — it's
@@ -683,48 +700,61 @@ function CustomizePage() {
 
               <div style={styles.controlBlock}>
                 <label style={styles.label}>Size</label>
-                <div style={styles.sizeGrid}>
-                  {config?.sizes?.map((s) => {
-                    const sizeDisabled =
-                      isVariantInventory &&
+                {isStandardSizing ? (
+                  // Task L1: STANDARD — no buttons, no requirement.
+                  // selectedSize stays null forever for this product.
+                  <p style={styles.muted}>
+                    {product?.standard_size_label || "One Size"}
+                  </p>
+                ) : !hasSizes ? (
+                  <p style={styles.muted}>Sizes are not configured yet.</p>
+                ) : (
+                  <>
+                    <div style={styles.sizeGrid}>
+                      {config?.sizes?.map((s) => {
+                        const sizeDisabled =
+                          isVariantInventory &&
+                          selectedColor &&
+                          !comboAvailable(selectedColor.id, s.id);
+
+                        const isSelected =
+                          !sizeDisabled && selectedSize?.id === s.id;
+
+                        return (
+                          <button
+                            key={s.id}
+                            onClick={() => handleSizeSelect(s)}
+                            disabled={sizeDisabled}
+                            title={sizeDisabled ? "Out of stock" : undefined}
+                            style={{
+                              ...styles.sizeBtn,
+                              background: isSelected ? "#111" : "#fff",
+                              color: isSelected ? "#fff" : "#111",
+                              opacity: sizeDisabled ? 0.35 : 1,
+                              cursor: sizeDisabled ? "not-allowed" : "pointer",
+                            }}
+                          >
+                            {s.size_label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {isVariantInventory &&
                       selectedColor &&
-                      !comboAvailable(selectedColor.id, s.id);
-
-                    const isSelected = !sizeDisabled && selectedSize?.id === s.id;
-
-                    return (
-                      <button
-                        key={s.id}
-                        onClick={() => handleSizeSelect(s)}
-                        disabled={sizeDisabled}
-                        title={sizeDisabled ? "Out of stock" : undefined}
-                        style={{
-                          ...styles.sizeBtn,
-                          background: isSelected ? "#111" : "#fff",
-                          color: isSelected ? "#fff" : "#111",
-                          opacity: sizeDisabled ? 0.35 : 1,
-                          cursor: sizeDisabled ? "not-allowed" : "pointer",
-                        }}
-                      >
-                        {s.size_label}
-                      </button>
-                    );
-                  })}
-                </div>
-                {isVariantInventory &&
-                  selectedColor &&
-                  selectedSize &&
-                  comboAvailable(selectedColor.id, selectedSize.id) && (
-                    <p style={styles.muted}>
-                      {availabilityLabel(
-                        getCombinationAvailability(
-                          config.inventory.combinations,
-                          selectedColor.id,
-                          selectedSize.id
-                        ).availability_status
+                      selectedSize &&
+                      comboAvailable(selectedColor.id, selectedSize.id) && (
+                        <p style={styles.muted}>
+                          {availabilityLabel(
+                            getCombinationAvailability(
+                              config.inventory.combinations,
+                              selectedColor.id,
+                              selectedSize.id
+                            ).availability_status
+                          )}
+                        </p>
                       )}
-                    </p>
-                  )}
+                  </>
+                )}
               </div>
 
               {showDesignSection && (
@@ -889,7 +919,12 @@ function CustomizePage() {
                 const comboOutOfStock =
                   isVariantInventory &&
                   !comboAvailable(selectedColor?.id ?? null, selectedSize?.id);
-                const outOfStock = generalOutOfStock || comboOutOfStock;
+                // Task L1: a MULTI_SIZE product with zero active sizes is
+                // not purchasable at all — STANDARD never hits this (it
+                // never requires a size to begin with).
+                const sizesNotConfigured = !isStandardSizing && !hasSizes;
+                const outOfStock =
+                  generalOutOfStock || comboOutOfStock || sizesNotConfigured;
 
                 return (
                   <button
@@ -901,7 +936,9 @@ function CustomizePage() {
                       cursor: outOfStock ? "not-allowed" : "pointer",
                     }}
                   >
-                    {outOfStock
+                    {sizesNotConfigured
+                      ? "Sizes Not Configured"
+                      : outOfStock
                       ? "Out of Stock"
                       : adding
                       ? "Adding..."

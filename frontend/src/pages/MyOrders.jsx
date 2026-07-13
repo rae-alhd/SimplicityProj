@@ -109,7 +109,14 @@ function OrderCard({ order }) {
                   <div style={s.itemInfo}>
                     <span style={s.itemName}>{item.product_name || "Product"}</span>
                     <div style={s.itemMeta}>
-  {item.size && <span style={s.metaTag}>Size: {item.size}</span>}
+  {/* Task L1: item.size is always null for a STANDARD order line — its
+      permanent standard_size_label_snapshot is shown instead, so a later
+      rename of the live label never changes an already-placed order. */}
+  {(item.size || item.standard_size_label_snapshot) && (
+    <span style={s.metaTag}>
+      Size: {item.size || item.standard_size_label_snapshot}
+    </span>
+  )}
   {item.color && <span style={s.metaTag}>Color: {item.color}</span>}
   <span style={s.metaTag}>Qty: {item.quantity}</span>
 </div>

@@ -662,4 +662,107 @@ router.patch(
   }
 );
 
+// PATCH /api/admin/products/:productId/sizing
+// Task L1: MULTI_SIZE (real selectable sizes) vs STANDARD (one fixed
+// admin-defined label, no size rows at all).
+router.patch(
+  "/:productId/sizing",
+  ensureProductExists,
+  async (req, res) => {
+    const { productId } = req.params;
+    const { sizing_mode, standard_size_label } = req.body;
+
+    if (sizing_mode !== "MULTI_SIZE" && sizing_mode !== "STANDARD") {
+      return res
+        .status(400)
+        .json({ error: "sizing_mode must be MULTI_SIZE or STANDARD." });
+    }
+
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      // Same product-row lock the inventory-mode PATCH above takes, so a
+      // concurrent size add/reactivate or inventory-mode switch for this
+      // exact product can't race this check.
+      await client.query("SELECT id FROM products WHERE id = $1 FOR UPDATE", [
+        productId,
+      ]);
+
+      if (sizing_mode === "MULTI_SIZE") {
+        // Task L1 design choice: CLEAR standard_size_label on switch to
+        // MULTI_SIZE rather than silently preserve it. A MULTI_SIZE
+        // product never displays this field, and keeping a stale value
+        // around risks it resurfacing confusingly if the product is later
+        // switched back to STANDARD without the owner re-entering it.
+        // Switching to MULTI_SIZE itself is never blocked — the product
+        // simply isn't customer-purchasable until an active size exists,
+        // which is enforced at Cart/checkout time, not here.
+        const result = await client.query(
+          `UPDATE products
+           SET sizing_mode = 'MULTI_SIZE', standard_size_label = NULL
+           WHERE id = $1
+           RETURNING id, sizing_mode, standard_size_label, inventory_mode`,
+          [productId]
+        );
+        await client.query("COMMIT");
+        return res.json(result.rows[0]);
+      }
+
+      // Switching to STANDARD.
+      const trimmedLabel =
+        typeof standard_size_label === "string" ? standard_size_label.trim() : "";
+
+      if (!trimmedLabel) {
+        await client.query("ROLLBACK");
+        return res
+          .status(400)
+          .json({ error: "standard_size_label is required." });
+      }
+
+      const productResult = await client.query(
+        "SELECT inventory_mode FROM products WHERE id = $1",
+        [productId]
+      );
+
+      if (productResult.rows[0].inventory_mode === "VARIANT") {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: "Standard-size products must use General inventory.",
+        });
+      }
+
+      const activeSizeCountResult = await client.query(
+        "SELECT COUNT(*) FROM customizable_product_sizes WHERE product_id = $1 AND is_active = true",
+        [productId]
+      );
+
+      if (Number(activeSizeCountResult.rows[0].count) > 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: "Deactivate all product sizes before switching to Standard sizing.",
+        });
+      }
+
+      const result = await client.query(
+        `UPDATE products
+         SET sizing_mode = 'STANDARD', standard_size_label = $1
+         WHERE id = $2
+         RETURNING id, sizing_mode, standard_size_label, inventory_mode`,
+        [trimmedLabel, productId]
+      );
+
+      await client.query("COMMIT");
+      res.json(result.rows[0]);
+    } catch (err) {
+      await client.query("ROLLBACK");
+      console.error("Change sizing mode error:", err);
+      res.status(500).json({ error: "Server error" });
+    } finally {
+      client.release();
+    }
+  }
+);
+
 module.exports = router;
