@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
 const { authMiddleware } = require("../middleware/auth.middleware");
+const { checkoutLimiter, adminMutationLimiter } = require("../middleware/rateLimit");
 const {
   groupImagesByProduct,
   resolveMainImageUrl,
@@ -318,7 +319,7 @@ async function attachOrderItemDesignFields(items) {
    Create a new order from the user's cart.
    Body: { customer_name, phone, address, notes }
 ───────────────────────────────────────────── */
-router.post("/", authMiddleware, async (req, res) => {
+router.post("/", checkoutLimiter, authMiddleware, async (req, res) => {
   const userId = req.user.id;
   const { customer_name, phone, address, notes, is_gift, payment_method } = req.body;
 
@@ -1373,7 +1374,7 @@ router.get("/:orderId/payment", authMiddleware, adminOnly, async (req, res) => {
 // Enforces the PENDING/FAILED/PAID/REFUNDED transition graph, sets
 // server-generated timestamps, and writes exactly one payment_status_history
 // row per real transition (idempotent same-status re-selects write nothing).
-router.patch("/:orderId/payment", authMiddleware, adminOnly, async (req, res) => {
+router.patch("/:orderId/payment", adminMutationLimiter, authMiddleware, adminOnly, async (req, res) => {
   const orderId = parseInt(req.params.orderId);
   const {
     status,
@@ -1889,7 +1890,7 @@ router.get("/:orderId/fulfillment", authMiddleware, adminOnly, async (req, res) 
 // mistyped tracking number after Shipped, or preparing shipping info while
 // still Ready). Never touches order status, shipped_at, or delivered_at —
 // those are exclusively server-set via PATCH /:id/status.
-router.patch("/:orderId/fulfillment", authMiddleware, adminOnly, async (req, res) => {
+router.patch("/:orderId/fulfillment", adminMutationLimiter, authMiddleware, adminOnly, async (req, res) => {
   const orderId = parseInt(req.params.orderId);
 
   const validation = validateFulfillmentInput(req.body);

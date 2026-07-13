@@ -138,6 +138,24 @@ If this is a fresh clone/DB, verify `backend/.env`'s `DATABASE_URL` points at th
 
 ---
 
+## 17. Production Check (if demoing against a deployed URL, not localhost)
+
+Only run the "test order" and payment/fulfillment steps below if you
+intend to create real test data on that deployment — they are not
+read-only.
+
+- [ ] Deployed homepage opens (Vercel URL loads without a blank page or console error).
+- [ ] `GET <backend-url>/api/health` returns `200` with `{"status":"ok","database":"connected",...}` — see `DEPLOYMENT_GUIDE.md`'s Health Endpoint section.
+- [ ] Product images load on the deployed storefront (not broken-image icons).
+- [ ] Customer login works on the deployed URL.
+- [ ] Admin login works on the deployed URL.
+- [ ] Cart works (add/remove/quantity) on the deployed URL.
+- [ ] One safe test order flow works end-to-end — **only if intentionally creating test data on this deployment**; use an obviously-fake customer name/address so it's easy to identify and clean up afterward.
+- [ ] Admin Payments and Fulfillment management pages load and, if a test order was placed above, can update its payment/fulfillment status.
+- [ ] Browser devtools console has no red/critical errors on the homepage, a product page, and the admin dashboard.
+
+---
+
 ## What to Say — Owner/Admin Feature Talking Points
 
 - *"This is the admin dashboard — the owner logs in once and gets stats, profit tracking, and automatic low/out-of-stock inventory alerts."*

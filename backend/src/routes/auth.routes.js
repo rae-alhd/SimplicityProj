@@ -4,9 +4,10 @@ const pool = require("../config/db");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const { authMiddleware } = require("../middleware/auth.middleware");
+const { authLimiter } = require("../middleware/rateLimit");
 
 // REGISTER new customer
-router.post("/register", async (req, res) => {
+router.post("/register", authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     const normalizedEmail = email?.trim().toLowerCase();
@@ -47,7 +48,7 @@ router.post("/register", async (req, res) => {
   }
 });
 
-router.post("/login", async (req, res) => {
+router.post("/login", authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     const normalizedEmail = email?.trim().toLowerCase();

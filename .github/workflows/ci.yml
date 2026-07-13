@@ -111,4 +111,12 @@ jobs:
 
       - name: Build frontend
         working-directory: frontend
+        # Task Q1.1: the production build now fails outright without a
+        # valid VITE_API_URL (frontend and backend deploy separately, so
+        # there's no safe default to fall back to). This is a CI-only
+        # placeholder — .test is a reserved TLD (RFC 2606) that never
+        # resolves to anything real, and it's never used for an actual
+        # network request; the build only needs it to pass validation.
         run: npm run build
+        env:
+          VITE_API_URL: https://example-backend.test/api

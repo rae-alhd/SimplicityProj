@@ -7,6 +7,7 @@ const router = express.Router();
 const pool = require("../config/db");
 const { authMiddleware, adminOnly } = require("../middleware/auth.middleware");
 const { getPublicBaseUrl } = require("../utils/publicUrl");
+const { sanitizeIdForFilename } = require("../utils/safeFilename");
 
 router.use(authMiddleware);
 router.use(adminOnly);
@@ -26,7 +27,10 @@ const storage = multer.diskStorage({
   },
   filename: (req, file, cb) => {
     const ext = MIME_EXTENSIONS[file.mimetype] || "";
-    const uniqueName = `${req.params.productId}-${Date.now()}-${crypto
+    // productId is already confirmed numeric by ensureProductExists before
+    // this ever runs, but sanitizeIdForFilename is applied defensively
+    // anyway — see backend/src/utils/safeFilename.js.
+    const uniqueName = `${sanitizeIdForFilename(req.params.productId)}-${Date.now()}-${crypto
       .randomBytes(6)
       .toString("hex")}${ext}`;
     cb(null, uniqueName);

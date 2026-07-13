@@ -7,6 +7,7 @@ const router = express.Router();
 const pool = require("../config/db");
 const { authMiddleware } = require("../middleware/auth.middleware");
 const { getPublicBaseUrl } = require("../utils/publicUrl");
+const { sanitizeIdForFilename } = require("../utils/safeFilename");
 
 // Admin-only guard
 function adminOnly(req, res, next) {
@@ -667,7 +668,7 @@ const designStorage = multer.diskStorage({
   },
   filename: (req, file, cb) => {
     const ext = DESIGN_MIME_EXTENSIONS[file.mimetype] || "";
-    const uniqueName = `design-${req.params.collectionId}-${Date.now()}-${crypto
+    const uniqueName = `design-${sanitizeIdForFilename(req.params.collectionId)}-${Date.now()}-${crypto
       .randomBytes(6)
       .toString("hex")}${ext}`;
     cb(null, uniqueName);
@@ -1396,7 +1397,7 @@ const previewStorage = multer.diskStorage({
   },
   filename: (req, file, cb) => {
     const ext = PREVIEW_MIME_EXTENSIONS[file.mimetype] || "";
-    const uniqueName = `preview-${req.params.variantId}-${Date.now()}-${crypto
+    const uniqueName = `preview-${sanitizeIdForFilename(req.params.variantId)}-${Date.now()}-${crypto
       .randomBytes(6)
       .toString("hex")}${ext}`;
     cb(null, uniqueName);
@@ -1405,7 +1406,7 @@ const previewStorage = multer.diskStorage({
 
 const uploadPreviewImages = multer({
   storage: previewStorage,
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: 5 * 1024 * 1024, files: 10 },
   fileFilter: (req, file, cb) => {
     if (!PREVIEW_MIME_EXTENSIONS[file.mimetype]) {
       return cb(new Error("Only JPEG, PNG, and WEBP images are allowed"));

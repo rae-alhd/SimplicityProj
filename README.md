@@ -171,3 +171,85 @@ This suite focuses on the order/inventory/payment/fulfillment workflows.
 Product galleries, customization collections/designs, homepage/admin
 settings, and most of the admin product-management UI are not yet covered
 by automated tests — see the latest test-suite report for exact numbers.
+
+## Production Readiness (Task Q1)
+
+Full deployment steps, environment variables, and a production checklist
+live in [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md). This section is a
+short summary of what backs it.
+
+- **Environment validation** — with `NODE_ENV=production`, the backend
+  refuses to start unless `DATABASE_URL`, `JWT_SECRET`, `JWT_EXPIRES_IN`,
+  and `FRONTEND_URL`/`ALLOWED_ORIGINS` are all set, and refuses a
+  placeholder or under-32-character `JWT_SECRET`. Never prints any
+  variable's value. See
+  [`backend/src/config/envValidation.js`](backend/src/config/envValidation.js).
+- **CORS** — locked to explicitly configured frontend origin(s) in
+  production instead of the previous unrestricted `cors()`. See
+  [`backend/src/config/cors.js`](backend/src/config/cors.js).
+- **Rate limiting** — login/register, checkout, and admin payment/
+  fulfillment mutations are IP-based rate limited
+  (`backend/src/middleware/rateLimit.js`); normal product browsing is not
+  limited. Correct client-IP detection depends on `trust proxy` being set
+  to `1` (one hop) in `backend/src/app.js`, matching Render's single
+  reverse-proxy hop — not `true` (trust everyone), which would make the
+  limiter spoofable. **Store limitation, documented honestly:**
+  `express-rate-limit` is configured with its default in-memory store —
+  there is no Redis or other shared store. This means limits are tracked
+  per backend *process*: counters reset on every restart/redeploy, and if
+  this were ever scaled to multiple backend replicas (Render's free/starter
+  tiers run exactly one), each replica would enforce its own separate
+  counter rather than sharing one. That's acceptable for this project's
+  current single-instance deployment, but a real multi-replica production
+  setup would need a shared store (e.g. Redis via `rate-limit-redis`) for
+  the limits to mean what they claim — not added here, since that requires
+  a paid/managed service this task wasn't authorized to add.
+- **Frontend API URL** — the frontend (Vercel) and backend (Render) are
+  deployed separately, so `npm run build` (a production build) now
+  **fails the build outright** unless `VITE_API_URL` is a valid `http(s)://`
+  URL whose path is **exactly `/api`** (no `javascript:`/`data:`/`ftp:`
+  schemes, no embedded credentials, no query string or fragment, and no
+  bare origin, sub-path, near-miss, or wrong casing — only `/api` itself,
+  trailing slash normalized away) — see
+  [`frontend/vite.config.js`](frontend/vite.config.js) and
+  [`frontend/src/config/validateApiUrl.js`](frontend/src/config/validateApiUrl.js).
+  It deliberately does **not** fall back to a same-origin relative `/api`
+  in production, since that would silently send every request to the
+  Vercel origin instead of the Render backend. `npm run dev` is
+  unaffected and keeps its `http://localhost:5000/api` fallback.
+- **Health check** — `GET /api/health` does a real `SELECT 1` and returns
+  `200`/`503` accordingly, with no internal details in the response. See
+  [Health Endpoint](DEPLOYMENT_GUIDE.md#health-endpoint) in the deployment guide.
+- **Global error handling** — a centralized error handler
+  (`backend/src/middleware/errorHandler.js`) never returns a stack trace
+  or raw internal error message to the client, in any environment; a JSON
+  404 handler (`backend/src/middleware/notFoundHandler.js`) covers unknown
+  `/api` routes.
+- **Graceful shutdown** — `backend/src/server.js` (never `app.js`, which
+  every test imports directly) handles `SIGINT`/`SIGTERM` by closing the
+  HTTP server and the PostgreSQL pool before exiting.
+- **Upload security** — JPEG/PNG/WEBP-only allowlist (no SVG, no
+  executables), server-generated filenames sanitized against path
+  traversal (`backend/src/utils/safeFilename.js`), per-file and per-batch
+  size/count limits, and partially-uploaded files are deleted if the
+  following database write fails.
+- **Uploads storage** — uploaded images are stored on the backend's local
+  filesystem, which is **ephemeral on most Render plans**. This is a real,
+  current limitation, not fixed by this task — see
+  [Uploads Storage](DEPLOYMENT_GUIDE.md#8-important-limitation--uploads-storage)
+  for the honest status and a documented (not yet implemented) migration
+  path to persistent storage.
+- **Auth token storage** — the JWT is stored in `localStorage` (see
+  `frontend/src/pages/Login.jsx`, `Navbar.jsx`, `MyOrders.jsx`), **not** an
+  HttpOnly cookie. This is a known, documented tradeoff: `localStorage` is
+  readable by any JavaScript running on the page, so a successful XSS
+  finding elsewhere in the frontend could steal a logged-in user's token.
+  Moving to HttpOnly secure cookies would meaningfully reduce that risk,
+  but is a real authentication-architecture change (cookie issuance,
+  CSRF protection, SameSite policy) — intentionally out of scope for this
+  task rather than rewritten under time pressure.
+- **Smoke test** — `backend/scripts/smoke-test.js`
+  (`npm run smoke:test -- <url>`) safely checks a running backend
+  (health, public product listing, safe 404, admin-route rejection)
+  without logging in or modifying any real data. See
+  [Smoke Test](DEPLOYMENT_GUIDE.md#smoke-test) in the deployment guide.
